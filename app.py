@@ -4,7 +4,9 @@ import yfinance as yf
 from datetime import datetime, timezone
 import plotly.express as px
 
+# -----------------------------
 # 1) SETUP
+# -----------------------------
 st.set_page_config(page_title="Global Alpha Strategy", layout="wide", page_icon="📈")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
@@ -17,12 +19,13 @@ def load_data():
 
 @st.cache_data(ttl=1800)
 def get_usdinr_rate():
+    """Fetch USD/INR FX rate. Fallback if Yahoo fails."""
     try:
         fx = yf.download("USDINR=X", period="5d", interval="1d", progress=False)
         rate = float(fx["Close"].dropna().iloc[-1])
         return rate if rate > 0 else 83.0
     except Exception:
-        return 83.0
+        return 83.0  # fallback
 
 @st.cache_data(ttl=300)
 def fetch_prices(tickers_list):
@@ -58,7 +61,9 @@ def fetch_prices(tickers_list):
 
     return pd.DataFrame(rows)
 
+# -----------------------------
 # 2) LOAD + VALIDATE
+# -----------------------------
 try:
     df = load_data()
 except Exception as e:
@@ -69,17 +74,23 @@ if df.empty:
     st.warning("Google Sheet is empty. Add tickers like AAPL or RELIANCE.NS.")
     st.stop()
 
-required = ["Ticker", "Quantity", "AvgCost"]
+required = ["Ticker", "Quantity", "AvgCost", "Type", "Thesis"]
 missing = [c for c in required if c not in df.columns]
 if missing:
     st.error(f"Header Mismatch: Missing {missing}")
-    st.info("Your sheet must include exactly: Ticker, Quantity, AvgCost")
+    st.info("Your sheet must include exactly: Ticker, Quantity, AvgCost, Type, Thesis")
     st.stop()
 
-# Clean types (important)
+# Clean types
 df["Ticker"] = df["Ticker"].astype(str).str.strip()
 df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
 df["AvgCost"] = pd.to_numeric(df["AvgCost"], errors="coerce")
+
+# Keep Type/Thesis as text
+df["Type"] = df["Type"].astype(str).fillna("").str.strip()
+df["Thesis"] = df["Thesis"].astype(str).fillna("").str.strip()
+
+# Drop rows missing essentials
 df = df.dropna(subset=["Ticker", "Quantity", "AvgCost"])
 
 tickers = df["Ticker"].dropna().unique().tolist()
@@ -90,7 +101,9 @@ with st.spinner("Syncing Global Market Data..."):
 
 df = df.merge(prices_df, on="Ticker", how="left")
 
+# -----------------------------
 # 3) FLAGS + LOCAL CALCS
+# -----------------------------
 df["Is_India"] = df["Ticker"].str.contains(r"\.(NS|BO)$", case=False, na=False, regex=True)
 
 df["Market Value Local"] = df["Quantity"] * df["Live Price"]
@@ -103,7 +116,9 @@ df["Cost Basis (USD)"] = df.apply(
     lambda x: x["Cost Basis Local"] / usd_inr_rate if x["Is_India"] else x["Cost Basis Local"], axis=1
 )
 
+# -----------------------------
 # 4) P&L CALCS
+# -----------------------------
 df["Gain/Loss %"] = None
 mask = (df["AvgCost"].notna()) & (df["AvgCost"] > 0) & (df["Live Price"].notna())
 df.loc[mask, "Gain/Loss %"] = ((df.loc[mask, "Live Price"] - df.loc[mask, "AvgCost"]) / df.loc[mask, "AvgCost"]) * 100
@@ -125,7 +140,9 @@ try:
 except Exception:
     day_gain_usd = None
 
-# 5) UI
+# -----------------------------
+# 5) UI HEADER
+# -----------------------------
 st.title("🌍 Global Alpha Strategy Terminal")
 st.markdown(f"**Portfolio Currency: USD** | FX: 1 USD = **{usd_inr_rate:.2f} INR**")
 
@@ -137,23 +154,57 @@ c4.metric("Last Sync (UTC)", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M
 
 st.divider()
 
-st.subheader("📊 Active Holdings")
-st.dataframe(
-    df[["Ticker", "Quantity", "AvgCost", "Live Price", "Gain/Loss %", "Market Value (USD)", "Total Gain (USD)"]],
-    column_config={
-        "Gain/Loss %": st.column_config.NumberColumn(format="%.2f %%"),
-        "Market Value (USD)": st.column_config.NumberColumn(format="$ %.2f"),
-        "Total Gain (USD)": st.column_config.NumberColumn(format="$ %.2f"),
-        "Live Price": st.column_config.NumberColumn(format="%.2f"),
-        "AvgCost": st.column_config.NumberColumn(format="%.2f"),
-    },
-    use_container_width=True,
-    hide_index=True
-)
+# -----------------------------
+# 6) HOLDINGS TABLE + THESIS PANEL
+# -----------------------------
+st.subheader("📌 Portfolio + Notes")
 
-# 6) BENCHMARKS
+left, right = st.columns([2, 1], gap="large")
+
+with left:
+    st.subheader("📊 Active Holdings")
+    st.dataframe(
+        df[["Ticker", "Type", "Quantity", "AvgCost", "Live Price", "Gain/Loss %", "Market Value (USD)", "Total Gain (USD)"]],
+        column_config={
+            "Gain/Loss %": st.column_config.NumberColumn(format="%.2f %%"),
+            "Market Value (USD)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Total Gain (USD)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Live Price": st.column_config.NumberColumn(format="%.2f"),
+            "AvgCost": st.column_config.NumberColumn(format="%.2f"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+with right:
+    tickers_sorted = sorted(df["Ticker"].dropna().unique().tolist())
+    selected = st.selectbox("Select a ticker", tickers_sorted)
+
+    row = df[df["Ticker"] == selected].iloc[0]
+
+    st.markdown("### 🧠 Thesis")
+    type_text = row.get("Type", "")
+    thesis_text = row.get("Thesis", "")
+
+    st.markdown(f"**Type:** {type_text if pd.notna(type_text) else ''}")
+
+    st.text_area(
+        "Investment thesis (edit in Google Sheet)",
+        value=str(thesis_text) if pd.notna(thesis_text) else "",
+        height=260
+    )
+
+    st.markdown("### ✅ Quick stats")
+    st.metric("Gain/Loss %", f"{row['Gain/Loss %']:.2f}%" if pd.notna(row["Gain/Loss %"]) else "NA")
+    st.metric("Market Value (USD)", f"${row['Market Value (USD)']:,.2f}" if pd.notna(row["Market Value (USD)"]) else "NA")
+    st.metric("Total Gain (USD)", f"${row['Total Gain (USD)']:,.2f}" if pd.notna(row["Total Gain (USD)"]) else "NA")
+
+# -----------------------------
+# 7) BENCHMARKS
+# -----------------------------
 st.divider()
 st.subheader("📈 Benchmarks (3M indexed to 100)")
+
 bench_tickers = {"S&P 500": "^GSPC", "NIFTY 50": "^NSEI", "Gold": "GC=F"}
 
 try:
@@ -165,7 +216,6 @@ try:
     bench = bench.rename(columns=rename_map)
 
     bench = bench.dropna(how="all").ffill()
-    # Ensure first row is not NaN for normalization
     bench = bench.loc[bench.notna().any(axis=1)]
     if bench.empty:
         raise ValueError("Benchmark data empty after cleaning.")
@@ -176,12 +226,20 @@ try:
         value_name="Index (Base=100)"
     )
 
-    fig = px.line(bench_norm, x="Date", y="Index (Base=100)", color="Benchmark",
-                  labels={"Index (Base=100)": "Indexed Performance", "Date": ""})
+    fig = px.line(
+        bench_norm,
+        x="Date",
+        y="Index (Base=100)",
+        color="Benchmark",
+        labels={"Index (Base=100)": "Indexed Performance", "Date": ""}
+    )
     fig.update_layout(legend_title_text="Benchmark")
     st.plotly_chart(fig, use_container_width=True)
 except Exception:
     st.info("Benchmark chart temporarily unavailable.")
 
+# -----------------------------
+# 8) FOOTER
+# -----------------------------
 st.divider()
 st.caption("Data source: Yahoo Finance (may be delayed). Educational project, not investment advice.")
