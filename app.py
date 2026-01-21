@@ -3,52 +3,33 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone, time as dtime
 from zoneinfo import ZoneInfo
-import plotly.express as px
 import plotly.graph_objects as go
 import time as _time
 
 # ============================================================
 # Atharva Portfolio Returns (Bulletproof Production-Grade)
-# - Never hard-crashes when partial data fails
-# - Triple pricing engine (Yahoo fast_info -> Yahoo bulk -> Sheet fallback)
-# - Degraded Mode banner + failure diagnostics
-# - Zombie holding checks (zero price, absurd day move)
-# - Mobile-friendly table toggle
-# - Daily Alpha vs S&P today + Inception Alpha vs S&P since start
-# - Country Risk (exposure) = geography weights, not FX returns
-# - FX used ONLY for INR exposure weights (NOT for returns)
 # ============================================================
 
 APP_TITLE = "Atharva Portfolio Returns"
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="📈")
 
-# -----------------------------
-# Google Sheet CSV (Portfolio tab)
-# -----------------------------
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
 
-# OPTIONAL: sold history as separate published CSV (only needed if you want Sold table)
-# If you prefer a "History" tab inside the same Google Sheet, you must publish that tab separately (different publish URL).
-HISTORY_SHEET_URL = ""  # keep "" to disable
+# If you want a Sold Positions tab, publish it separately (its own CSV URL)
+HISTORY_SHEET_URL = ""  # optional
 
-# -----------------------------
-# Columns
-# -----------------------------
 REQUIRED_COLS = ["Ticker", "Region", "QTY", "AvgCost"]
-OPTIONAL_COLS = ["Benchmark", "Type", "Thesis", "FirstBuyDate", "LivePrice_GS", "PrevClose_GS", "FX_Rate"]
+OPTIONAL_COLS = [
+    "Benchmark", "Type", "Thesis", "FirstBuyDate",
+    "LivePrice_GS", "PrevClose_GS", "FX_Rate"
+]
 
 SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
 DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}
 
-MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
-ASSET_LABELS = {
-    "^GSPC": "^GSPC (S&P 500)",
-    "^NSEI": "^NSEI (Nifty 50)",
-    "GC=F": "GC=F (Gold)",
-    "SI=F": "SI=F (Silver)",
-}
+# Core macro assets used for charts; benchmarks are discovered dynamically too
+CORE_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F", "USDINR=X"]
 BENCH_LABEL = {"^GSPC": "S&P 500", "^NSEI": "Nifty 50", "GC=F": "Gold", "SI=F": "Silver"}
-
 
 # -----------------------------
 # Helpers
@@ -57,7 +38,6 @@ def _clean_str(x):
     if pd.isna(x):
         return ""
     return str(x).strip()
-
 
 def _as_float(x):
     try:
@@ -70,7 +50,6 @@ def _as_float(x):
     except Exception:
         return None
 
-
 def _normalize_region(r):
     r = _clean_str(r).upper()
     if r in ["US", "USA", "UNITED STATES", "UNITEDSTATES"]:
@@ -78,7 +57,6 @@ def _normalize_region(r):
     if r in ["INDIA", "IN", "IND"]:
         return "India"
     return r
-
 
 def _region_key(region: str) -> str:
     r = _clean_str(region).lower()
@@ -88,10 +66,8 @@ def _region_key(region: str) -> str:
         return "india"
     return r
 
-
 def _default_benchmark_for_region(region: str) -> str:
     return DEFAULT_BENCH.get(_region_key(region), "")
-
 
 def _parse_date(x):
     try:
@@ -100,13 +76,6 @@ def _parse_date(x):
         return pd.to_datetime(str(x).strip(), errors="coerce")
     except Exception:
         return pd.NaT
-
-
-def _fmt_pct(x):
-    if x is None or pd.isna(x):
-        return None
-    return x * 100
-
 
 def _bench_context(bench: str):
     b = _clean_str(bench)
@@ -118,16 +87,19 @@ def _bench_context(bench: str):
         return f"vs {BENCH_LABEL.get(b, b)}"
     return f"vs {b}" if b else "—"
 
-
 def _status_tag(alpha_day, bench):
     if alpha_day is None or pd.isna(alpha_day):
         return "—"
     short = "Nifty" if bench == "^NSEI" else ("S&P" if bench == "^GSPC" else "Index")
     return (f"🔥 Beating Market (vs {short})") if alpha_day >= 0 else (f"❄️ Lagging Market (vs {short})")
 
+def _safe_pct(x):
+    if x is None or pd.isna(x):
+        return None
+    return float(x) * 100.0
 
 # -----------------------------
-# Market session logic (simple time-window UX)
+# Market session logic
 # -----------------------------
 def _is_market_open(now_utc: datetime, market: str) -> bool:
     if market == "US":
@@ -146,7 +118,6 @@ def _is_market_open(now_utc: datetime, market: str) -> bool:
 
     return False
 
-
 def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
     us_open = _is_market_open(now_utc, "US")
     in_open = _is_market_open(now_utc, "India")
@@ -156,7 +127,7 @@ def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
             return "🟡 Markets are currently closed. Showing data from the last available trading session.", "closed"
         return "🟡 Pricing is temporarily unavailable. Showing partial content while data refreshes.", "mixed"
 
-    near_zero = calc_df["Day_Ret"].dropna().abs() < 1e-6
+    near_zero = calc_df["Day_Ret"].dropna().abs() < 1e-9
     pct_zero = float(near_zero.mean()) if len(near_zero) else 0.0
 
     if (not us_open and not in_open) or pct_zero > 0.8:
@@ -166,7 +137,6 @@ def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
     if us_open and not in_open:
         return "🟦 US market is open. India market is closed (India picks reflect last India session).", "mixed"
     return "🟩 Markets are open.", "open"
-
 
 # -----------------------------
 # Load + clean + aggregate
@@ -189,13 +159,10 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     df["Benchmark"] = df["Benchmark"].apply(_clean_str)
     df["Type"] = df["Type"].apply(_clean_str)
     df["Thesis"] = df["Thesis"].apply(_clean_str)
-    df["FirstBuyDate"] = df["FirstBuyDate"].apply(_parse_date)
 
-    # Sheet fallback pricing (optional)
+    df["FirstBuyDate"] = df["FirstBuyDate"].apply(_parse_date)
     df["LivePrice_GS"] = df["LivePrice_GS"].apply(_as_float)
     df["PrevClose_GS"] = df["PrevClose_GS"].apply(_as_float)
-
-    # FX_Rate is ONLY for INR exposure weights (not for returns)
     df["FX_Rate"] = df["FX_Rate"].apply(_as_float)
 
     df = df[df["Ticker"].str.len() > 0]
@@ -207,16 +174,10 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     df = df.dropna(subset=["Ticker", "Region", "QTY", "AvgCost"])
     df = df[df["QTY"] != 0]
 
-    # Default benchmark by region
     df.loc[df["Benchmark"].str.len() == 0, "Benchmark"] = df["Region"].apply(_default_benchmark_for_region)
-
-    # If FX_Rate missing, set US -> current USDINR weight later (fallback); set India -> 1.0 now
-    # We will keep NaN here and fill after we fetch USDINR, so weights stay realistic.
-    df.loc[df["Region"].str.upper() == "INDIA", "FX_Rate"] = df.loc[df["Region"].str.upper() == "INDIA", "FX_Rate"].fillna(1.0)
 
     df["TotalCost"] = df["QTY"] * df["AvgCost"]
 
-    # Aggregate duplicates
     agg = df.groupby(["Ticker", "Region", "Benchmark"], as_index=False).agg(
         QTY=("QTY", "sum"),
         TotalCost=("TotalCost", "sum"),
@@ -229,11 +190,12 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     )
     agg["AvgCost"] = agg["TotalCost"] / agg["QTY"]
 
+    # FX_Rate: ONLY for INR exposure/weights. Default 1.0 if missing.
+    agg.loc[agg["FX_Rate"].isna(), "FX_Rate"] = 1.0
+
     agg = agg.dropna(subset=["Ticker", "QTY", "AvgCost"])
     agg = agg[agg["QTY"] != 0]
-
     return agg.reset_index(drop=True)
-
 
 @st.cache_data(ttl=300)
 def load_sold_history(url: str) -> pd.DataFrame:
@@ -246,19 +208,17 @@ def load_sold_history(url: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-
 # -----------------------------
-# Dynamic Symbol Discovery (fix ghost benchmarks)
+# Dynamic Symbol Discovery (Fix Ghost Benchmarks)
 # -----------------------------
 def _discover_all_symbols(df_sheet: pd.DataFrame):
-    holdings = df_sheet["Ticker"].unique().tolist()
+    holdings = df_sheet["Ticker"].dropna().unique().tolist()
     benchmarks = df_sheet["Benchmark"].dropna().unique().tolist()
-    core = ["^GSPC", "^NSEI", "GC=F", "SI=F", "USDINR=X"]
-    return list(set(holdings + benchmarks + core))
-
+    core = CORE_ASSETS[:]
+    return sorted(list(set(holdings + benchmarks + core)))
 
 # -----------------------------
-# Pricing Engine (Triple-Threat)
+# Pricing Engine (Triple fallback)
 # -----------------------------
 def _fast_live_prev(ticker: str):
     live, prev = None, None
@@ -270,7 +230,6 @@ def _fast_live_prev(ticker: str):
             prev = fi.get("previous_close", None)
     except Exception:
         pass
-
     try:
         live = float(live) if live is not None else None
     except Exception:
@@ -279,26 +238,47 @@ def _fast_live_prev(ticker: str):
         prev = float(prev) if prev is not None else None
     except Exception:
         prev = None
-
     return live, prev
 
-
 @st.cache_data(ttl=300)
-def fetch_history_closes_chunked(tickers, period="15d", interval="1d", chunk_size=25, retries=2):
+def fetch_history_closes_chunked(
+    tickers,
+    period="15d",
+    interval="1d",
+    chunk_size=25,
+    retries=2,
+    timeout_per_chunk=15,
+    skip_timeouts=True,
+):
+    """
+    Bulletproof bulk fetch:
+    - chunking to avoid 100-ticker wall
+    - progress bar
+    - timeout alarm on Unix (Streamlit Cloud is Linux)
+    """
+    import signal
+
     tickers = sorted(list(set([_clean_str(t) for t in tickers if _clean_str(t)])))
     if not tickers:
         return pd.DataFrame()
 
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Chunk took too long")
+
     frames = []
-    progress_bar = st.progress(0)
+    progress = st.progress(0.0)
 
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
-        progress_bar.progress(min((i + chunk_size) / len(tickers), 1.0))
-        last_err = None
+        progress.progress(min((i + chunk_size) / len(tickers), 1.0))
 
+        last_err = None
         for attempt in range(retries + 1):
             try:
+                if hasattr(signal, "SIGALRM"):
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(int(timeout_per_chunk))
+
                 df = yf.download(
                     tickers=chunk,
                     period=period,
@@ -306,30 +286,48 @@ def fetch_history_closes_chunked(tickers, period="15d", interval="1d", chunk_siz
                     progress=False,
                     auto_adjust=False,
                     threads=False,
-                    group_by="column",
+                    group_by="column"
                 )
+
+                if hasattr(signal, "SIGALRM"):
+                    signal.alarm(0)
+
                 if df is not None and not df.empty:
                     frames.append(df)
                 last_err = None
                 break
+            except TimeoutError:
+                if skip_timeouts:
+                    st.warning(f"⏱️ Chunk {i//chunk_size + 1} timed out. Skipping {len(chunk)} tickers.")
+                    last_err = None
+                    break
+                last_err = TimeoutError("timeout")
             except Exception as e:
                 last_err = e
-                _time.sleep(0.7 * (attempt + 1))
+                _time.sleep(0.6 * (attempt + 1))
 
         if last_err:
-            st.warning(f"⚠️ Chunk {i//chunk_size + 1} failed after {retries + 1} attempts: {str(last_err)[:60]}")
+            st.warning(f"⚠️ Chunk {i//chunk_size + 1} failed: {str(last_err)[:80]}")
 
-    progress_bar.empty()
+    progress.empty()
 
     if not frames:
         return pd.DataFrame()
 
     return pd.concat(frames, axis=1)
 
-
 @st.cache_data(ttl=300)
-def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
-    hist = fetch_history_closes_chunked(tickers)
+def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict, timeout_per_chunk=15, skip_timeouts=True):
+    hist = fetch_history_closes_chunked(
+        tickers,
+        period="15d",
+        interval="1d",
+        chunk_size=25,
+        retries=2,
+        timeout_per_chunk=timeout_per_chunk,
+        skip_timeouts=skip_timeouts,
+    )
+
     price_map = {}
 
     def _hist_last_prev(df, tk):
@@ -358,10 +356,12 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
         tk = _clean_str(tk)
         source = "none"
 
+        # 1) fast_info
         live_fast, prev_fast = _fast_live_prev(tk)
         if live_fast is not None or prev_fast is not None:
             source = "yfinance_fastinfo"
 
+        # 2) bulk history
         last_close, prev_close = _hist_last_prev(hist, tk)
         if (live_fast is None) and (last_close is not None):
             source = "yfinance_bulk"
@@ -369,7 +369,7 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
         live = live_fast if live_fast is not None else last_close
         prev = prev_fast if prev_fast is not None else prev_close
 
-        # Retry single ticker if still missing
+        # 3) single-ticker fallback
         if live is None or prev is None:
             try:
                 df1 = yf.download(
@@ -378,7 +378,7 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
                     interval="1d",
                     progress=False,
                     auto_adjust=False,
-                    threads=False,
+                    threads=False
                 )
                 if df1 is not None and not df1.empty and "Close" in df1.columns:
                     s1 = df1["Close"].dropna()
@@ -391,20 +391,26 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
             except Exception:
                 pass
 
-        # Google Sheet fallback
+        # 4) google sheet fallback
         if (live is None) or (prev is None):
             fb = sheet_fallback.get(tk, {})
             fb_live = fb.get("live", None)
             fb_prev = fb.get("prev", None)
 
             if live is None and fb_live is not None:
-                live = float(fb_live)
-                source = "google_sheet"
+                try:
+                    live = float(fb_live)
+                    source = "google_sheet"
+                except Exception:
+                    pass
             if prev is None and fb_prev is not None:
-                prev = float(fb_prev)
-                source = "google_sheet"
+                try:
+                    prev = float(fb_prev)
+                    source = "google_sheet"
+                except Exception:
+                    pass
 
-        # Final safety
+        # if still missing prev, mirror live (prevents division crash)
         if prev is None and live is not None:
             prev = live
 
@@ -412,54 +418,36 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
 
     return price_map
 
-
-@st.cache_data(ttl=900)
-def fetch_fx_usdinr():
-    live, _ = _fast_live_prev("USDINR=X")
-    if live is not None and live > 0:
-        return live
-    try:
-        fx = yf.download("USDINR=X", period="15d", interval="1d", progress=False, auto_adjust=False, threads=False)
-        s = fx["Close"].dropna()
-        if not s.empty:
-            v = float(s.iloc[-1])
-            return v if v > 0 else 83.0
-    except Exception:
-        pass
-    return 83.0
-
-
-@st.cache_data(ttl=900)
-def fetch_5y_macro():
-    t = yf.download(MACRO_ASSETS, period="5y", interval="1mo", progress=False, auto_adjust=False, threads=False)["Close"]
-    if isinstance(t, pd.Series):
-        t = t.to_frame()
-    return t.dropna(how="all").ffill()
-
-
 # -----------------------------
-# Inception benchmark index (S&P) for Inception Alpha
+# Benchmark inception index (for regret matrix)
 # -----------------------------
 @st.cache_data(ttl=900)
-def build_sp500_index(start_date: pd.Timestamp):
+def build_index_monthly(symbol: str, start_date: pd.Timestamp):
     if start_date is None or pd.isna(start_date):
         return None
     start_date = pd.to_datetime(start_date).tz_localize(None)
-    px = yf.download("^GSPC", start=(start_date - pd.Timedelta(days=20)).strftime("%Y-%m-%d"),
-                     interval="1d", progress=False, auto_adjust=False, threads=False)
+    px = yf.download(
+        symbol,
+        start=(start_date - pd.Timedelta(days=20)).strftime("%Y-%m-%d"),
+        interval="1d",
+        progress=False,
+        auto_adjust=False,
+        threads=False
+    )
     if px is None or px.empty or "Close" not in px.columns:
         return None
-    s = px["Close"].dropna()
-    if s.empty:
+    m = px["Close"].resample("M").last().dropna()
+    if m.empty:
         return None
-    return (float(s.iloc[-1]) / float(s.iloc[0])) - 1.0
-
+    idx = (m / float(m.iloc[0])) * 100.0
+    idx.name = symbol
+    return idx
 
 # ============================================================
-# UI: Sidebar (About + Follow + Export)
+# UI: Sidebar
 # ============================================================
 st.sidebar.markdown(f"## {APP_TITLE}")
-st.sidebar.markdown("**Institutional tracking of my portfolio and alpha.**")
+st.sidebar.markdown("Institutional tracking of my portfolio and alpha.")
 st.sidebar.markdown("---")
 
 st.sidebar.markdown("### About Me")
@@ -467,30 +455,33 @@ st.sidebar.write(
     "I am Atharva Bhutada, an equity research-focused finance professional. "
     "This dashboard tracks my portfolio positioning, performance, and alpha vs benchmarks."
 )
+
 st.sidebar.markdown("**Contact**")
 st.sidebar.write("LinkedIn: linkedin.com/in/atharva-bhutada")
 st.sidebar.write("Email: abhutada1@babson.edu")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Track My Portfolio")
-st.sidebar.caption("Download my current picks as CSV and track them in your own sheet.")
-# Download button will be added after calc_df exists.
+st.sidebar.markdown("### Performance Controls")
+
+show_details = st.sidebar.checkbox("📱 Desktop mode (show all columns)", value=False, key="show_details_toggle")
+
+skip_timeouts = st.sidebar.checkbox("⏱️ Skip slow tickers (recommended)", value=True, key="skip_timeouts_toggle")
+timeout_per_chunk = st.sidebar.slider("Chunk timeout (seconds)", 5, 30, 15, 1, key="timeout_per_chunk_slider")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Follow Updates")
 with st.sidebar.form("follow_form", clear_on_submit=True):
-    email = st.text_input("Enter your email to follow updates", placeholder="name@email.com")
-    submitted = st.form_submit_button("Follow")
+    email = st.text_input("Enter your email to follow updates", placeholder="name@email.com", key="follow_email")
+    submitted = st.form_submit_button("Follow", use_container_width=True)
     if submitted:
         if email and "@" in email:
-            st.success("Saved. (Connect this to Zapier/Make/SMTP to send notifications.)")
+            st.success("Saved. (Connect to Zapier/Make/SMTP to send notifications.)")
         else:
             st.warning("Enter a valid email.")
-
 
 # ============================================================
 # MAIN
 # ============================================================
+
 try:
     df_sheet = load_and_clean_data(SHEET_URL)
 except Exception as e:
@@ -501,24 +492,22 @@ if df_sheet.empty:
     st.warning("No valid holdings found. Check Ticker/Region/QTY/AvgCost.")
     st.stop()
 
-# Build sheet fallback dictionary
+# Sheet fallback map for prices
 sheet_fallback = {}
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r.get("Ticker", ""))
     sheet_fallback[tk] = {"live": r.get("LivePrice_GS", None), "prev": r.get("PrevClose_GS", None)}
 
-# Discover tickers + benchmarks dynamically
 all_symbols = _discover_all_symbols(df_sheet)
 
 with st.spinner("Syncing portfolio data..."):
-    fx_usdinr_live = fetch_fx_usdinr()
-    prices = build_prices_with_sheet_fallback(all_symbols, sheet_fallback)
-    macro = fetch_5y_macro()
+    prices = build_prices_with_sheet_fallback(
+        all_symbols,
+        sheet_fallback,
+        timeout_per_chunk=timeout_per_chunk,
+        skip_timeouts=skip_timeouts,
+    )
 
-# Fill missing FX_Rate for US with LIVE USDINR (for exposure weights ONLY)
-df_sheet.loc[(df_sheet["Region"].str.upper() == "US") & (df_sheet["FX_Rate"].isna()), "FX_Rate"] = fx_usdinr_live
-
-# Build calc_df
 rows, failures = [], []
 
 for _, r in df_sheet.iterrows():
@@ -529,7 +518,7 @@ for _, r in df_sheet.iterrows():
     p_tk = prices.get(tk, None)
     p_b = prices.get(bench, None) if bench else None
 
-    # Issue 1: log failures, do NOT silently drop without reporting
+    # Issue #1: no silent failure
     if not p_tk or p_tk.get("live", None) is None or p_tk.get("prev", None) is None:
         failures.append({"Ticker": tk, "Reason": "Missing holding price (Yahoo + Sheet failed)"})
         continue
@@ -542,31 +531,34 @@ for _, r in df_sheet.iterrows():
     prev = float(p_tk["prev"])
     qty = float(r["QTY"])
     avg = float(r["AvgCost"])
-    fx_locked = float(r.get("FX_Rate", 1.0))
 
-    # Issue 3: Zombie holding checks
+    # FX used ONLY for INR exposure/weights (NOT returns)
+    fx_locked = float(r.get("FX_Rate", 1.0) or 1.0)
+
+    # Issue #3: zombie holdings / zero checks
     if avg == 0 or live == 0:
-        failures.append({"Ticker": tk, "Reason": "Zero price detected (delisted or halted?)"})
+        failures.append({"Ticker": tk, "Reason": "Zero price detected (delisted, halted, or bad data)"})
         continue
 
     total_ret = (live - avg) / avg if avg != 0 else None
     day_ret = (live - prev) / prev if prev != 0 else None
 
+    # absurd intraday moves are usually data issues
     if day_ret is not None and abs(day_ret) > 0.5:
-        failures.append({"Ticker": tk, "Reason": f"Suspicious intraday move: {day_ret*100:.1f}%"})
+        failures.append({"Ticker": tk, "Reason": f"Suspicious intraday move: {_safe_pct(day_ret):.1f}%"})
         continue
 
     alpha_day = None
+    b_day = None
     if bench:
         b_live = float(p_b["live"])
         b_prev = float(p_b["prev"])
-        b_day = (b_live - b_prev) / b_prev if b_prev != 0 else None
+        if b_prev != 0:
+            b_day = (b_live - b_prev) / b_prev
         if day_ret is not None and b_day is not None:
             alpha_day = day_ret - b_day
 
-    # FX used ONLY for exposure weights (INR value)
-    value_inr = qty * live * fx_locked
-
+    value_inr = qty * live * fx_locked  # exposure only
     rows.append({
         "Ticker": tk,
         "Region": region,
@@ -576,307 +568,135 @@ for _, r in df_sheet.iterrows():
         "AvgCost": avg,
         "LivePrice": live,
         "PrevClose": prev,
-        "TotalCost": float(r.get("TotalCost", qty * avg)),
-        "Value_INR": value_inr,
-        "Total_Ret": total_ret,
-        "Day_Ret": day_ret,
-        "Alpha_Day": alpha_day,
+        "Total Ret%": _safe_pct(total_ret),
+        "Day Ret%": _safe_pct(day_ret),
+        "Bench Day%": _safe_pct(b_day),
+        "Alpha Day%": _safe_pct(alpha_day),
         "Beat_Index_Tag": _status_tag(alpha_day, bench),
-        "Type": r.get("Type", ""),
-        "Thesis": r.get("Thesis", ""),
-        "FirstBuyDate": r.get("FirstBuyDate", pd.NaT),
+        "Value_INR": value_inr,
+        "FX_Rate_Locked": fx_locked,
         "PriceSource": p_tk.get("source", "none"),
-        "FX_WeightRate": fx_locked,
     })
 
 calc_df = pd.DataFrame(rows)
 
-# If EVERYTHING failed, still do not crash. Show failures and stop gracefully.
-if calc_df.empty:
-    st.title(f"📈 {APP_TITLE}")
-    st.error("No holdings could be priced right now (Yahoo + Google Sheet fallbacks missing).")
-    if failures:
-        st.warning(f"⚠️ Degraded Mode: {len(failures)} ticker(s) missing live data.")
-        with st.expander("🔧 View Pricing Failures"):
-            st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
-            st.caption("Tip: Ensure LivePrice_GS and PrevClose_GS are populated in your Google Sheet for every ticker.")
-    st.stop()
-
-# Weights
-calc_df["Weight"] = calc_df["Value_INR"] / calc_df["Value_INR"].sum()
-
-port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
-port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
-
-in_w = calc_df.loc[calc_df["Region"].str.upper() == "INDIA", "Weight"].sum()
-us_w = calc_df.loc[calc_df["Region"].str.upper() == "US", "Weight"].sum()
-
-# S&P day return (for Daily Alpha vs S&P)
-def _safe_day(sym):
-    p = prices.get(sym, None)
-    if not p or p.get("live") is None or p.get("prev") is None or float(p["prev"]) == 0:
-        return None
-    return (float(p["live"]) - float(p["prev"])) / float(p["prev"])
-
-spx_day = _safe_day("^GSPC")
-
-daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
-
-# Strategy start date for inception alpha
-strategy_start = None
-if calc_df["FirstBuyDate"].notna().any():
-    strategy_start = pd.to_datetime(calc_df["FirstBuyDate"].dropna().min()).tz_localize(None)
-
-spx_inception_ret = build_sp500_index(strategy_start) if strategy_start is not None else None
-inception_alpha_vs_spx = (port_total - spx_inception_ret) if (spx_inception_ret is not None) else None
-
-# -----------------------------
-# Header + Market Status
-# -----------------------------
-st.title(f"📈 {APP_TITLE}")
-st.caption("Returns are shown in native currency. FX is used only for portfolio exposure weights (INR value), never for return calculation.")
-
-now_utc = datetime.now(timezone.utc)
-status_text, status_type = _market_status_badge(now_utc, calc_df)
-if status_type == "closed":
-    st.info(status_text)
-elif status_type == "mixed":
-    st.warning(status_text)
-else:
-    st.success(status_text)
-
-# Issue 1: Degraded Mode banner
+# Degraded Mode banner (Issue #1)
 if failures:
     st.warning(f"⚠️ Degraded Mode: {len(failures)} ticker(s) missing live data. Showing partial portfolio.")
-    with st.expander("🔧 View Pricing Failures"):
-        st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
-        st.caption("Tip: Add LivePrice_GS and PrevClose_GS columns in your Google Sheet and keep them filled for each ticker.")
+    with st.expander("🔧 View Pricing Failures", expanded=False):
+        st.dataframe(pd.DataFrame(failures), use_container_width=True, key="failures_table")
+        st.caption("Tip: Add LivePrice_GS and PrevClose_GS columns in your Google Sheet for backup pricing.")
 
-# -----------------------------
-# Metrics (Phase 1)
-# -----------------------------
-m1, m2, m3, m4 = st.columns(4)
+if calc_df.empty:
+    st.error("No rows could be priced. Check tickers, Yahoo availability, or provide LivePrice_GS/PrevClose_GS fallbacks.")
+    st.stop()
 
-with m1:
-    st.metric(
-        "Total Return (Strategy)",
-        f"{port_total*100:.2f}%",
-        help="Weighted total return across holdings vs your AvgCost, in each stock’s native currency."
-    )
-
-with m2:
-    delta_txt = f"{daily_alpha_vs_spx*100:+.2f}% vs S&P" if daily_alpha_vs_spx is not None else None
-    st.metric(
-        "Daily Alpha (vs S&P 500)",
-        f"{(daily_alpha_vs_spx or 0)*100:.2f}%" if daily_alpha_vs_spx is not None else "—",
-        delta=delta_txt,
-        help="Daily Alpha = (Portfolio today return) - (S&P 500 today return)."
-    )
-
-with m3:
-    val = f"{inception_alpha_vs_spx*100:.2f}%" if inception_alpha_vs_spx is not None else "—"
-    st.metric(
-        "Inception Alpha (vs S&P 500)",
-        val,
-        help="Inception Alpha = (Total Strategy Return) - (Total S&P 500 Return) since strategy start date."
-    )
-
-with m4:
-    st.metric("Last Sync (UTC)", now_utc.strftime("%Y-%m-%d %H:%M"))
-    st.caption("Prices may be delayed (Yahoo Finance).")
-
-st.divider()
-
-# -----------------------------
-# Tabs: Combined / India / US (Phase 2: responsive)
-# -----------------------------
-tabs = st.tabs(["Combined", "India", "US"])
-
-def _render_section(dfx: pd.DataFrame, title_suffix: str):
-    if dfx.empty:
-        st.info("No holdings in this view.")
-        return
-
-    # Exposure summary
-    alloc = dfx.groupby("Region", as_index=False)["Weight"].sum()
-
-    # Responsive columns
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.subheader(f"📌 Picks {title_suffix}")
-
-        show = dfx.copy()
-        show["Weight%"] = show["Weight"] * 100
-        show["Total Ret%"] = show["Total_Ret"].apply(_fmt_pct)
-        show["Day Ret%"] = show["Day_Ret"].apply(_fmt_pct)
-        show["Score vs Index%"] = show["Alpha_Day"].apply(_fmt_pct)
-
-        # Mobile UX toggle (Issue 4)
-        show_details = st.checkbox("📱 Show detailed columns (desktop mode)", value=False, key=f"detail_{title_suffix}")
-
-        if show_details:
-            cols_to_show = [
-                "Ticker", "Region", "Benchmark", "Compared To",
-                "Weight%", "AvgCost", "LivePrice", "PrevClose",
-                "Total Ret%", "Day Ret%", "Beat_Index_Tag",
-                "Score vs Index%", "PriceSource"
-            ]
-        else:
-            cols_to_show = ["Ticker", "Weight%", "Total Ret%", "Day Ret%", "Beat_Index_Tag"]
-
-        st.dataframe(
-            show[cols_to_show],
-            column_config={
-                "Weight%": st.column_config.NumberColumn("Weight", format="%.2f%%", help="Exposure weight based on INR value (FX only used here)."),
-                "Total Ret%": st.column_config.NumberColumn("Total Return", format="%.2f%%"),
-                "Day Ret%": st.column_config.NumberColumn("Today Return", format="%.2f%%"),
-                "Score vs Index%": st.column_config.NumberColumn("Alpha vs Index", format="%.2f%%", help="Stock day return minus benchmark day return."),
-                "PriceSource": st.column_config.TextColumn("Price Source", help="yfinance_fastinfo / yfinance_bulk / yfinance_single / google_sheet"),
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # Export button (Phase 4)
-        export_cols = ["Ticker", "Region", "QTY", "AvgCost", "Benchmark", "Type"]
-        export_df = dfx[export_cols].copy()
-        st.download_button(
-            "⬇️ Download Picks as CSV",
-            data=export_df.to_csv(index=False).encode("utf-8"),
-            file_name="atharva_portfolio_picks.csv",
-            mime="text/csv",
-            help="Download my current picks to track them in your own sheet."
-        )
-
-        # Thesis expander
-        with st.expander("🧠 Thesis / Notes (from Google Sheet)"):
-            tickers_sorted = sorted(show["Ticker"].unique().tolist())
-            selected = st.selectbox("Select a ticker", tickers_sorted, key=f"sel_{title_suffix}")
-            pick = show[show["Ticker"] == selected]
-            if not pick.empty:
-                r = pick.iloc[0]
-                st.write(f"**Type:** {r.get('Type','')}")
-                st.write(f"**Region:** {r.get('Region','')}")
-                st.write(f"**Benchmark:** {r.get('Benchmark','')}")
-                st.text_area("Thesis (edit in Google Sheet)", value=str(r.get("Thesis","")), height=180, key=f"th_{title_suffix}")
-
-    with col_right:
-        st.subheader("🌍 Country Risk (Exposure)")
-        fig_pie = px.pie(alloc, values="Weight", names="Region", hole=0.5)
-        st.plotly_chart(fig_pie, use_container_width=True)
-        st.caption("Country Risk reflects geographic exposure weights (India vs US), not FX impact on returns.")
-
-# Combined
-with tabs[0]:
-    _render_section(calc_df, "(Combined)")
-
-# India
-with tabs[1]:
-    _render_section(calc_df[calc_df["Region"].str.upper() == "INDIA"].copy(), "(India)")
-
-# US
-with tabs[2]:
-    _render_section(calc_df[calc_df["Region"].str.upper() == "US"].copy(), "(US)")
-
-st.divider()
-
-# -----------------------------
-# Macro Chart (optional, stays stable)
-# -----------------------------
-st.subheader("📈 5-Year Macro Trends (Monthly, Indexed to 100)")
-if macro is None or macro.empty:
-    st.info("Macro trend data unavailable right now.")
+# Weights from INR exposure
+total_value = float(calc_df["Value_INR"].sum()) if calc_df["Value_INR"].notna().any() else 0.0
+if total_value > 0:
+    calc_df["Weight%"] = (calc_df["Value_INR"] / total_value) * 100.0
 else:
-    macro_named = macro.copy().rename(columns={k: v for k, v in ASSET_LABELS.items() if k in macro.columns})
-    macro_named = macro_named.dropna(how="all").ffill()
+    calc_df["Weight%"] = None
 
-    base_row = macro_named.iloc[0]
-    plot_idx = (macro_named / base_row) * 100.0
+# Header + market status
+now_utc = datetime.now(timezone.utc)
+status_msg, _ = _market_status_badge(now_utc, calc_df)
+st.title(APP_TITLE)
+st.caption(status_msg)
 
-    fig = go.Figure()
-    for col in plot_idx.columns:
-        fig.add_trace(go.Scatter(x=plot_idx.index, y=plot_idx[col], mode="lines", name=col, line=dict(width=2)))
-    fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Index (Base=100)",
-        legend_title="Asset",
-        margin=dict(l=10, r=10, t=20, b=10)
-    )
+# KPIs
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Holdings Priced", f"{len(calc_df)}")
+with col2:
+    st.metric("Total Exposure (INR)", f"₹{total_value:,.0f}")
+with col3:
+    avg_day = calc_df["Day Ret%"].dropna().mean()
+    st.metric("Avg Day Return", f"{avg_day:.2f}%" if pd.notna(avg_day) else "—")
+with col4:
+    avg_alpha = calc_df["Alpha Day%"].dropna().mean()
+    st.metric("Avg Alpha (Day)", f"{avg_alpha:.2f}%" if pd.notna(avg_alpha) else "—")
+
+st.divider()
+
+# -----------------------------
+# Table (Issue #4 mobile UX)
+# -----------------------------
+if show_details:
+    cols_to_show = [
+        "Ticker", "Region", "Benchmark", "Weight%", "QTY", "AvgCost",
+        "LivePrice", "PrevClose", "Total Ret%", "Day Ret%",
+        "Alpha Day%", "Beat_Index_Tag", "PriceSource"
+    ]
+else:
+    cols_to_show = ["Ticker", "Weight%", "Total Ret%", "Day Ret%", "Beat_Index_Tag"]
+
+show = calc_df.copy()
+# clean formatting for display
+for c in ["Weight%", "Total Ret%", "Day Ret%", "Alpha Day%"]:
+    if c in show.columns:
+        show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+
+st.subheader("📌 Current Holdings")
+st.dataframe(show[cols_to_show], use_container_width=True, key="holdings_table")
+
+# Download CSV (FIXES your DuplicateElementId crash)
+csv_bytes = show.to_csv(index=False).encode("utf-8")
+st.download_button(
+    "⬇️ Download Picks as CSV",
+    data=csv_bytes,
+    file_name="atharva_portfolio_picks.csv",
+    mime="text/csv",
+    help="Download my current picks to track them in your own sheet.",
+    key="download_picks_csv_main"   # <- critical
+)
+
+st.divider()
+
+# -----------------------------
+# Simple allocation pie (optional, fast)
+# -----------------------------
+st.subheader("🧭 Allocation by Region")
+alloc = calc_df.groupby("Region", as_index=False)["Value_INR"].sum()
+if not alloc.empty and alloc["Value_INR"].sum() > 0:
+    fig = go.Figure(data=[go.Pie(labels=alloc["Region"], values=alloc["Value_INR"], hole=0.35)])
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320)
     st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
 # -----------------------------
-# Regret Matrix (Feature 2)
+# Feature: Regret Matrix (Opportunity Cost) vs S&P 500
 # -----------------------------
 st.subheader("😢 The Road Not Taken (Opportunity Cost)")
-if strategy_start is None:
-    st.info("Add FirstBuyDate in your Google Sheet to unlock inception analytics.")
-else:
-    if spx_inception_ret is None:
-        st.info("S&P inception return unavailable right now.")
-    else:
-        invested_capital = float(calc_df["TotalCost"].sum())
-        alternative_value = invested_capital * (1 + spx_inception_ret)
-        actual_value = float(calc_df["Value_INR"].sum())
+strategy_start = df_sheet["FirstBuyDate"].dropna().min() if "FirstBuyDate" in df_sheet.columns else pd.NaT
+
+if pd.notna(strategy_start):
+    spx_idx = build_index_monthly("^GSPC", strategy_start)
+    if spx_idx is not None and len(spx_idx) >= 2:
+        spx_return = (float(spx_idx.iloc[-1]) / float(spx_idx.iloc[0])) - 1.0
+
+        invested_capital = float(df_sheet["TotalCost"].sum())  # cost basis (native currency mix)
+        # Opportunity cost is conceptual; we show INR exposure comparison using today's INR exposure:
+        alt_value = total_value * (1 + spx_return)
+
         st.metric(
-            "If You Had Bought the S&P 500 Instead",
-            f"₹{alternative_value:,.0f}",
-            delta=f"₹{(actual_value - alternative_value):,.0f}",
-            help="Compares your invested cost basis versus what it would be worth if it compounded at S&P returns since your first buy date."
+            "If Current Exposure Tracked S&P 500 Since First Buy",
+            f"₹{alt_value:,.0f}",
+            delta=f"₹{(total_value - alt_value):,.0f}"
         )
-
-st.divider()
-
-# -----------------------------
-# Deep Dive (Phase 3)
-# -----------------------------
-st.subheader("🔍 Deep Dive (Ticker History + Financial Ratios)")
-selected_ticker = st.selectbox("Select a ticker for deep dive", sorted(calc_df["Ticker"].unique().tolist()), key="deep_dive_sel")
-dd = fetch_ticker_deep_dive(selected_ticker)
-
-if dd is None:
-    st.info("Deep dive unavailable right now (data provider issue).")
+        st.caption("This is a directional opportunity-cost view, not a backtest of exact cashflows.")
+    else:
+        st.info("Regret Matrix unavailable (insufficient S&P 500 history).")
 else:
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.write(f"**{dd.get('name', selected_ticker)}**")
-        hist = dd.get("hist", None)
-        if hist is not None and not hist.empty and "Close" in hist.columns:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], mode="lines", name="Close"))
-            fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), xaxis_title="Date", yaxis_title="Price")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("Price history unavailable.")
-    with c2:
-        st.write("**Key Ratios**")
-        def _kv(k, v):
-            st.write(f"- **{k}:** {v if v is not None else '—'}")
-        _kv("Sector", dd.get("sector"))
-        _kv("Industry", dd.get("industry"))
-        _kv("Market Cap", dd.get("marketCap"))
-        _kv("P/E (TTM)", dd.get("trailingPE"))
-        _kv("P/E (Forward)", dd.get("forwardPE"))
-        _kv("Price/Book", dd.get("priceToBook"))
-        _kv("Debt/Equity", dd.get("debtToEquity"))
-        _kv("Profit Margin", dd.get("profitMargins"))
-        _kv("Operating Margin", dd.get("operatingMargins"))
-        _kv("ROE", dd.get("returnOnEquity"))
-        _kv("ROA", dd.get("returnOnAssets"))
+    st.info("Add FirstBuyDate to enable the Regret Matrix.")
 
 # -----------------------------
-# Sold Positions (optional)
+# Sold positions (optional)
 # -----------------------------
 if HISTORY_SHEET_URL.strip():
-    st.divider()
-    st.subheader("📜 Sold Positions (History)")
-    sold_df = load_sold_history(HISTORY_SHEET_URL)
-    if sold_df.empty:
-        st.info("History sheet is empty or not reachable.")
-    else:
-        st.dataframe(sold_df, use_container_width=True, hide_index=True)
-
-st.divider()
-st.caption("Data source: Yahoo Finance and optional Google Sheet fallback. Educational project, not investment advice.")
+    sold = load_sold_history(HISTORY_SHEET_URL)
+    if not sold.empty:
+        st.divider()
+        st.subheader("✅ Sold Positions")
+        st.dataframe(sold, use_container_width=True, key="sold_positions_table")
