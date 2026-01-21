@@ -10,14 +10,14 @@ import time as _time
 
 # ============================================================
 # Atharva Portfolio Returns (Privacy-first, resilient)
-# Key requirements implemented:
-# - NO portfolio value shown anywhere (only indexed curves Base=100 + weights)
-# - ALWAYS use Google Sheet price columns as fallback for the whole page
-#   (except Deep Dive fundamentals which can still fail safely)
-# - Ignore sold investments (ledger uses Qty; negative/zero holdings excluded)
-# - Fix StreamlitDuplicateElementId by using unique keys for download buttons
-# - Fix "signal only works in main thread" by avoiding threaded yfinance calls
-# - Keep old structure, only add the missing "Inception Equity Curve"
+#
+# FIXES INCLUDED:
+# ✅ Crash fix: _plot_indexed_strategy no longer calls .to_frame() on DataFrames
+# ✅ Alpha fix: Inception equity curve is built in ONE currency (INR)
+#    - India tickers valued in INR
+#    - US tickers valued in USD * USDINR daily series (FX normalized per day)
+# ✅ No summing daily values (uses daily market value only, then rebases to Base=100)
+# ✅ No absolute ₹ values shown anywhere (only Base=100 indices and weights/returns)
 # ============================================================
 
 APP_TITLE = "Atharva Portfolio Returns"
@@ -27,8 +27,7 @@ st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="📈")
 # Holdings (Current portfolio snapshot)
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
 
-# Transactions (Ledger) - published Transactions tab as CSV
-# ✅ YOUR PROVIDED LINK
+# Transactions (Ledger) - CSV published
 TRANSACTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR-OybDEJRMpK5jvtLnMq3SOze-ZwT6hVY07w4nAnKfn1dva_E68fKSZQkn0yvzDhk217HEQ7xis77G/pub?output=csv"
 
 # =============================
@@ -38,7 +37,7 @@ REQUIRED_COLS = ["Ticker", "Region", "QTY", "AvgCost"]
 OPTIONAL_COLS = ["Benchmark", "Type", "Thesis", "FirstBuyDate", "LivePrice_GS", "PrevClose_GS"]
 
 SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
-DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}  # benchmark per region if blank
+DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}
 
 MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
 ASSET_LABELS = {
@@ -120,8 +119,22 @@ def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
     return f"""{label} <span title="{safe_help}" style="cursor:default;">ⓘ</span>"""
 
+def _ensure_series(obj, preferred_col=None):
+    """Convert Series/DataFrame into a Series safely."""
+    if obj is None:
+        return None
+    if isinstance(obj, pd.Series):
+        return obj
+    if isinstance(obj, pd.DataFrame):
+        if preferred_col and preferred_col in obj.columns:
+            return obj[preferred_col]
+        if obj.shape[1] == 1:
+            return obj.iloc[:, 0]
+        return obj.iloc[:, 0]
+    return None
+
 # ============================================================
-# Market session logic (India + US)
+# Market session logic
 # ============================================================
 def _is_market_open(now_utc: datetime, market: str) -> bool:
     if market == "US":
@@ -214,6 +227,8 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
 
 # ============================================================
 # Load transactions ledger (for equity curve)
+# Expected columns (flexible names):
+# Date, Ticker, Qty (positive buy, negative sell), Region(optional), FX_Rate(optional)
 # ============================================================
 @st.cache_data(ttl=300)
 def load_transactions(url: str) -> pd.DataFrame:
@@ -250,13 +265,15 @@ def load_transactions(url: str) -> pd.DataFrame:
     out = out[out["Ticker"].str.len() > 0]
     out = out.sort_values("Date").reset_index(drop=True)
 
+    # Infer region if missing
     def infer_region(tk):
         t = _clean_str(tk).upper()
-        if t.endswith(".NS") or t.endswith(".BO") or t == "^NSEI":
+        if t.endswith(".NS") or t.endswith(".BO") or t in ["^NSEI"]:
             return "India"
         return "US"
 
     out.loc[out["Region"].astype(str).str.strip() == "", "Region"] = out["Ticker"].apply(infer_region)
+
     return out
 
 # ============================================================
@@ -331,6 +348,7 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
                 if "Close" not in df.columns:
                     return None, None
                 s = df["Close"].dropna()
+
             if len(s) >= 1:
                 last_close = float(s.iloc[-1])
             if len(s) >= 2:
@@ -394,21 +412,6 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
     return price_map
 
 @st.cache_data(ttl=900)
-def fetch_fx_usdinr(sheet_fallback: dict):
-    live, _ = _fast_live_prev("USDINR=X")
-    if live is not None and live > 0:
-        return live
-    try:
-        fx = yf.download("USDINR=X", period="15d", interval="1d", progress=False, auto_adjust=False, threads=False)
-        s = fx["Close"].dropna()
-        if not s.empty:
-            v = float(s.iloc[-1])
-            return v if v > 0 else 83.0
-    except Exception:
-        pass
-    return 83.0
-
-@st.cache_data(ttl=900)
 def fetch_5y_macro():
     t = yf.download(MACRO_ASSETS, period="5y", interval="1mo", progress=False, auto_adjust=False, threads=False)["Close"]
     if isinstance(t, pd.Series):
@@ -416,7 +419,10 @@ def fetch_5y_macro():
     return t.dropna(how="all").ffill()
 
 # ============================================================
-# PRIVACY-FIRST Equity Curve (Index only, Base=100)
+# PRIVACY-FIRST Inception Equity Curve (Base=100, INR-normalized)
+# - Builds daily shares from transactions
+# - Values India positions in INR
+# - Values US positions in USD * USDINR daily series
 # ============================================================
 @st.cache_data(ttl=1800)
 def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
@@ -428,6 +434,7 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
 
     tickers = sorted(txn["Ticker"].unique().tolist())
 
+    # Download close prices for tickers (daily)
     px = yf.download(
         tickers=tickers,
         start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -440,12 +447,28 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
 
     if px is None or (isinstance(px, pd.DataFrame) and px.empty):
         return None
-
     if isinstance(px, pd.Series):
         px = px.to_frame()
 
     px = px.dropna(how="all").ffill()
 
+    # FX series (USDINR daily close)
+    fx = yf.download(
+        "USDINR=X",
+        start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
+        end=(end + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+        interval="1d",
+        progress=False,
+        auto_adjust=False,
+        threads=False
+    )
+    fx = fx["Close"] if fx is not None and not fx.empty and "Close" in fx.columns else None
+    if fx is None or fx.dropna().empty:
+        # fallback constant (safe)
+        fx = pd.Series(83.0, index=px.index)
+    fx = fx.reindex(px.index).ffill().bfill()
+
+    # Daily positions (shares) from ledger
     days = px.index
     pos = pd.DataFrame(0.0, index=days, columns=tickers)
 
@@ -458,17 +481,41 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
         s = s.reindex(days).fillna(0.0)
         pos[tk] = s.cumsum()
 
+    # Ignore sold / short: no negative holdings
     pos = pos.clip(lower=0.0)
 
-    common = [c for c in tickers if c in px.columns]
-    if not common:
-        return None
+    # Region map (India vs US) from txn sheet (latest known per ticker)
+    last_region = (
+        txn.sort_values("Date")
+           .groupby("Ticker")["Region"]
+           .last()
+           .to_dict()
+    )
 
-    v = (pos[common] * px[common]).sum(axis=1)
-    v = v[v > 0].dropna()
+    # Value daily in INR units (internal only)
+    v = pd.Series(0.0, index=days)
+
+    for tk in tickers:
+        if tk not in px.columns:
+            continue
+        region = _normalize_region(last_region.get(tk, "US"))
+        price_series = px[tk].astype(float)
+        shares = pos[tk].astype(float)
+
+        if _region_key(region) == "us":
+            # USD -> INR via daily FX
+            v = v.add(shares * price_series * fx, fill_value=0.0)
+        else:
+            # India already INR
+            v = v.add(shares * price_series, fill_value=0.0)
+
+    v = v.replace([float("inf"), float("-inf")], pd.NA).dropna()
+    v = v[v > 0]
+
     if v.empty:
         return None
 
+    # Base=100 index (no INR values exposed)
     idx = (v / float(v.iloc[0])) * 100.0
     idx.name = "My Portfolio (Indexed)"
     return idx
@@ -478,6 +525,7 @@ def build_benchmark_index(symbol: str, start_date: pd.Timestamp):
     if start_date is None or pd.isna(start_date):
         return None
     start_date = pd.to_datetime(start_date).tz_localize(None)
+
     px = yf.download(
         symbol,
         start=(start_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -486,17 +534,20 @@ def build_benchmark_index(symbol: str, start_date: pd.Timestamp):
         auto_adjust=False,
         threads=False
     )
+
     if px is None or px.empty or "Close" not in px.columns:
         return None
+
     s = px["Close"].dropna()
     if s.empty:
         return None
+
     idx = (s / float(s.iloc[0])) * 100.0
     idx.name = f"{symbol} (Indexed)"
     return idx
 
 # ============================================================
-# Calendar Heatmap (clean week labels like Webull)
+# Calendar Heatmap (unchanged)
 # ============================================================
 @st.cache_data(ttl=900)
 def build_daily_alpha_heatmap_series(tickers, weights, start_date):
@@ -576,7 +627,7 @@ def render_calendar_heatmap(alpha_df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# Deep Dive (safe failure)
+# Deep Dive (unchanged)
 # ============================================================
 @st.cache_data(ttl=900)
 def fetch_ticker_deep_dive(ticker: str):
@@ -658,6 +709,7 @@ if df_sheet.empty:
     st.warning("No valid holdings found. Check Ticker/Region/QTY/AvgCost.")
     st.stop()
 
+# Google Sheet fallback dict
 sheet_fallback = {}
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r.get("Ticker", ""))
@@ -669,11 +721,10 @@ all_symbols = list(set(holdings + benchmarks + ["USDINR=X"] + MACRO_ASSETS))
 
 with st.spinner("Syncing portfolio data..."):
     prices = build_prices_with_sheet_fallback(all_symbols, sheet_fallback)
-    fx_usdinr = fetch_fx_usdinr(sheet_fallback)
     macro = fetch_5y_macro()
 
 # ============================================================
-# Compute per-holding metrics (NO absolute portfolio value displayed)
+# Compute per-holding metrics
 # ============================================================
 rows, failures = [], []
 for _, r in df_sheet.iterrows():
@@ -687,6 +738,7 @@ for _, r in df_sheet.iterrows():
     if not p_tk or p_tk.get("live", None) is None or p_tk.get("prev", None) is None:
         failures.append({"Ticker": tk, "Reason": "Missing holding price (Yahoo + Sheet failed)"})
         continue
+
     if bench and (not p_b or p_b.get("live", None) is None or p_b.get("prev", None) is None):
         failures.append({"Ticker": tk, "Reason": f"Missing benchmark price ({bench})"})
         continue
@@ -707,7 +759,11 @@ for _, r in df_sheet.iterrows():
         if day_ret is not None and b_day is not None:
             alpha_day = day_ret - b_day
 
-    value_inr = qty * live * (fx_usdinr if _region_key(region) == "us" else 1.0)
+    # Exposure weights only (do NOT show value)
+    # USDINR not needed for returns, only weights, we use last price map for USDINR=X
+    fx_live = prices.get("USDINR=X", {}).get("live", None)
+    fx_live = float(fx_live) if fx_live else 83.0
+    value_inr = qty * live * (fx_live if _region_key(region) == "us" else 1.0)
 
     rows.append({
         "Ticker": tk,
@@ -735,7 +791,9 @@ calc_df = pd.DataFrame(rows)
 # Header + status
 # ============================================================
 st.title("📈 Atharva Portfolio Returns")
-st.markdown("This dashboard tracks my portfolio performance and **alpha vs the S&P 500**, with India positions benchmarked to Nifty at the stock level.")
+st.markdown(
+    "This dashboard tracks my portfolio performance and **alpha vs the S&P 500**, with India positions benchmarked to Nifty at the stock level."
+)
 st.caption("Returns are shown in native currency. FX (USD/INR) is used only for exposure weights, not for returns.")
 
 now_utc = datetime.now(timezone.utc)
@@ -754,12 +812,13 @@ if calc_df.empty:
     st.stop()
 
 # ============================================================
-# Weights (fixed) + no sold positions
+# Weights
 # ============================================================
 calc_df = calc_df[calc_df["QTY"] > 0].copy()
 den = calc_df["Value_INR"].sum()
 calc_df["Weight"] = (calc_df["Value_INR"] / den) if den and den > 0 else 0.0
 
+# Portfolio metrics
 port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
 port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
 
@@ -783,6 +842,7 @@ inception_alpha_vs_spx = None
 try:
     txn_df = load_transactions(TRANSACTIONS_URL)
     portfolio_idx = build_equity_curve_index_from_ledger(txn_df)
+
     if portfolio_idx is not None and not portfolio_idx.empty:
         start_dt = pd.to_datetime(portfolio_idx.index.min()).tz_localize(None)
         spx_idx = build_benchmark_index("^GSPC", start_dt)
@@ -814,7 +874,7 @@ with m3:
     st.metric(label="", value="—" if daily_alpha_vs_spx is None else f"{daily_alpha_vs_spx*100:.2f}%")
 
 with m4:
-    st.markdown(_tooltip("**Inception Alpha (vs S&P)**", "Uses the Transactions ledger to reconstruct portfolio daily holdings and builds an index (Base=100). Alpha is strategy total return minus S&P return over the same period."), unsafe_allow_html=True)
+    st.markdown(_tooltip("**Inception Alpha (vs S&P)**", "Uses Transactions ledger to reconstruct daily holdings, values everything in INR (US via USDINR=X), then rebases to Base=100. Alpha is strategy total return minus S&P return."), unsafe_allow_html=True)
     st.metric(label="", value="—" if inception_alpha_vs_spx is None else f"{inception_alpha_vs_spx*100:.2f}%")
 
 st.caption(_tooltip("Last Sync (UTC)", "Pricing uses Yahoo Finance with a Google Sheet fallback when available."), unsafe_allow_html=True)
@@ -829,6 +889,20 @@ tabs = st.tabs(["Combined", "India", "US"])
 def _filter_region(df, region_name):
     return df[df["Region"].str.upper() == region_name.upper()].copy()
 
+def _rebase_to_100(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in out.columns:
+        s = out[c].dropna()
+        if s.empty:
+            continue
+        base = float(s.iloc[0])
+        if base == 0:
+            continue
+        out[c] = (out[c] / base) * 100.0
+    return out
+
 def _plot_indexed_strategy(macro_df, portfolio_series=None, spx_series=None, title="Strategy vs Benchmarks (Indexed to 100 at Start)"):
     if macro_df is None or macro_df.empty:
         st.info("Macro trend data unavailable right now.")
@@ -837,28 +911,38 @@ def _plot_indexed_strategy(macro_df, portfolio_series=None, spx_series=None, tit
     macro_named = macro_df.copy().rename(columns={k: v for k, v in ASSET_LABELS.items() if k in macro_df.columns})
     plot_df = macro_named.copy()
 
-    if portfolio_series is not None and not portfolio_series.empty:
-        p = portfolio_series.resample("M").last()
-        p.name = "My Portfolio (Indexed)"
-        plot_df = plot_df.merge(p.to_frame(), left_index=True, right_index=True, how="left")
+    # Convert portfolio/spx to Series safely, then resample to month-end to match macro
+    if portfolio_series is not None and not pd.Series(portfolio_series).empty:
+        p = _ensure_series(portfolio_series, preferred_col="My Portfolio (Indexed)")
+        if p is not None and not p.dropna().empty:
+            p = p.resample("M").last()
+            p.name = "My Portfolio (Indexed)"
+            plot_df = plot_df.join(p, how="left")
 
-    if spx_series is not None and not spx_series.empty:
-        s = spx_series.resample("M").last()
-        s.name = "S&P 500 (Indexed)"
-        plot_df = plot_df.merge(s.to_frame(), left_index=True, right_index=True, how="left")
+    if spx_series is not None:
+        s = _ensure_series(spx_series)
+        if s is not None and not s.dropna().empty:
+            s = s.resample("M").last()
+            s.name = "S&P 500 (Indexed)"
+            plot_df = plot_df.join(s, how="left")
 
     plot_df = plot_df.dropna(how="all").ffill()
     if plot_df.empty:
         st.info("Not enough data to plot right now.")
         return
 
-    base = plot_df.iloc[0]
-    plot_idx = (plot_df / base) * 100.0
+    plot_idx = _rebase_to_100(plot_df)
 
     fig = go.Figure()
     for col in plot_idx.columns:
         width = 4 if "My Portfolio" in col else 2
-        fig.add_trace(go.Scatter(x=plot_idx.index, y=plot_idx[col], mode="lines", name=col, line=dict(width=width)))
+        fig.add_trace(go.Scatter(
+            x=plot_idx.index,
+            y=plot_idx[col],
+            mode="lines",
+            name=col,
+            line=dict(width=width),
+        ))
     fig.update_layout(
         title=title,
         xaxis_title="Date",
@@ -874,7 +958,14 @@ with tabs[0]:
 
     with left:
         st.subheader("📈 Strategy vs Benchmarks (Return Index, Base=100)")
-        _plot_indexed_strategy(macro_df=macro, portfolio_series=portfolio_idx, spx_series=spx_idx, title="Strategy vs Macro Benchmarks (Indexed)")
+        if portfolio_idx is None:
+            st.info("Inception equity curve unavailable (transactions/prices missing).")
+        _plot_indexed_strategy(
+            macro_df=macro,
+            portfolio_series=portfolio_idx,
+            spx_series=spx_idx,
+            title="Strategy vs Macro Benchmarks (Indexed)"
+        )
 
     with right:
         st.subheader("🌍 Country Risk (Live Exposure)")
@@ -1012,10 +1103,19 @@ else:
         st.write(f"Margins: {deep.get('profitMargins')}")
 
 with st.expander("🧠 Thesis / Notes (from Google Sheet)"):
-    raw = calc_df[calc_df["Ticker"] == selected]
-    if not raw.empty:
-        st.text_area("Thesis (edit in Google Sheet)", value=str(raw.iloc[0].get("Thesis", "")), height=180)
+    pick = show[show["Ticker"] == selected]
+    if not pick.empty:
+        r = pick.iloc[0]
+        st.write(f"**Type:** {r.get('Type','') if 'Type' in r else ''}")
+        st.write(f"**Region:** {r.get('Region','')}")
+        st.write(f"**Benchmark:** {r.get('Benchmark','')}")
+        raw = calc_df[calc_df["Ticker"] == selected]
+        if not raw.empty:
+            st.text_area("Thesis (edit in Google Sheet)", value=str(raw.iloc[0].get("Thesis", "")), height=180)
 
+# ============================================================
+# Failures
+# ============================================================
 if failures:
     st.divider()
     st.warning("Some symbols could not be priced (dashboard still runs on partial data).")
