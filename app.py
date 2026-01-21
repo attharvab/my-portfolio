@@ -1,23 +1,19 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
+from zoneinfo import ZoneInfo
 import plotly.express as px
+import plotly.graph_objects as go
 
 # ============================================================
 # Global Alpha Strategy Terminal (Human-First Production)
-# What this app does (in plain English):
-# 1) Shows your total return per stock in its native currency (USD stocks in USD, India stocks in INR)
-# 2) Shows "Did you beat the market TODAY?" using a weighted benchmark:
-#    (India weight * Nifty day move) + (US weight * S&P day move)
-# 3) Shows per-pick "Beat Index?" tags so first-time users understand instantly
-# 4) Shows 5Y macro trends with readable labels: (S&P 500), (Nifty 50), (Gold), (Silver)
-# 5) Adds a "My Portfolio (Indexed)" line if FirstBuyDate is present (point-in-time backtest)
-#
-# Your philosophy enforced:
-# - FX is used ONLY for weights (exposure), NOT for returns
-# - Returns are native currency
-# - Defensive + lean: explicit failures, safe fallbacks, caching
+# - Bulletproof UX for first-time viewers:
+#   1) Market Status badge (weekend/holiday/closed sessions)
+#   2) Clear benchmark context in table (vs Nifty / vs S&P)
+#   3) Macro chart re-indexed to your FirstBuyDate baseline
+# - Your philosophy enforced:
+#   - FX used ONLY for exposure weights, NOT for returns
 # ============================================================
 
 st.set_page_config(page_title="Global Alpha Strategy Terminal", layout="wide", page_icon="🏛️")
@@ -34,13 +30,19 @@ SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
 
 DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}  # if Benchmark blank
 
-# Macro assets + user-friendly names (includes Silver SI=F)
-MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
+MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]  # includes Silver
 ASSET_LABELS = {
     "^GSPC": "^GSPC (S&P 500)",
     "^NSEI": "^NSEI (Nifty 50)",
     "GC=F": "GC=F (Gold)",
     "SI=F": "SI=F (Silver)",
+}
+
+BENCH_LABEL = {
+    "^GSPC": "S&P 500",
+    "^NSEI": "Nifty 50",
+    "GC=F": "Gold",
+    "SI=F": "Silver"
 }
 
 # -----------------------------
@@ -86,7 +88,7 @@ def _parse_date(x):
     try:
         if pd.isna(x) or str(x).strip() == "":
             return pd.NaT
-        return pd.to_datetime(str(x).strip(), errors="coerce").date()
+        return pd.to_datetime(str(x).strip(), errors="coerce")
     except Exception:
         return pd.NaT
 
@@ -95,11 +97,73 @@ def _fmt_pct(x):
         return None
     return x * 100
 
-def _status_tag(alpha_day):
-    # alpha_day is stock day return minus benchmark day return
+def _bench_context(bench: str):
+    b = _clean_str(bench)
+    if b == "^NSEI":
+        return "vs Nifty 50 (India)"
+    if b == "^GSPC":
+        return "vs S&P 500 (US)"
+    if b in ["GC=F", "SI=F"]:
+        return f"vs {BENCH_LABEL.get(b, b)}"
+    return f"vs {b}" if b else "—"
+
+def _status_tag(alpha_day, bench):
     if alpha_day is None or pd.isna(alpha_day):
         return "—"
-    return "🔥 Beating Market" if alpha_day >= 0 else "❄️ Lagging Market"
+    short = "Nifty" if bench == "^NSEI" else ("S&P" if bench == "^GSPC" else "Index")
+    return (f"🔥 Beating Market (vs {short})") if alpha_day >= 0 else (f"❄️ Lagging Market (vs {short})")
+
+# -----------------------------
+# Market session logic (India + US)
+# -----------------------------
+def _is_market_open(now_utc: datetime, market: str) -> bool:
+    """
+    market: 'US' or 'India'
+    Uses simple weekday + time windows.
+    Not perfect for holidays, but great UX and avoids "dead app" perception.
+    """
+    if market == "US":
+        tz = ZoneInfo("America/New_York")
+        now = now_utc.astimezone(tz)
+        if now.weekday() >= 5:
+            return False
+        # 9:30 to 16:00 ET
+        return time(9, 30) <= now.time() <= time(16, 0)
+
+    if market == "India":
+        tz = ZoneInfo("Asia/Kolkata")
+        now = now_utc.astimezone(tz)
+        if now.weekday() >= 5:
+            return False
+        # 9:15 to 15:30 IST
+        return time(9, 15) <= now.time() <= time(15, 30)
+
+    return False
+
+def _market_status_badge(now_utc: datetime, nifty_day, spx_day, calc_df: pd.DataFrame):
+    """
+    Returns (status_text, status_type)
+    status_type in {'open','closed','mixed'} for display styling.
+    Adds a fallback heuristic: if day moves are ~0 AND many live==prev, likely closed/delayed.
+    """
+    us_open = _is_market_open(now_utc, "US")
+    in_open = _is_market_open(now_utc, "India")
+
+    # Heuristic: if most day returns are 0 (or near), it "looks dead"
+    near_zero = calc_df["Day_Ret"].dropna().abs() < 1e-6
+    pct_zero = float(near_zero.mean()) if len(near_zero) else 0.0
+
+    # If both markets "closed" by time OR data looks stale -> show closed note
+    if (not us_open and not in_open) or pct_zero > 0.8:
+        return "🟡 Markets are currently closed or prices are not updating. Showing data from the last trading session.", "closed"
+
+    if in_open and not us_open:
+        return "🟦 India market is open. US market is closed (US picks will reflect last US session).", "mixed"
+
+    if us_open and not in_open:
+        return "🟦 US market is open. India market is closed (India picks will reflect last India session).", "mixed"
+
+    return "🟩 Markets are open.", "open"
 
 # -----------------------------
 # Load + clean + aggregate
@@ -113,51 +177,41 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing columns in Google Sheet: {missing}. Required: {REQUIRED_COLS}")
 
-    # Ensure optional columns exist
     for c in OPTIONAL_COLS:
         if c not in df.columns:
             df[c] = ""
 
-    # Clean strings
     df["Ticker"] = df["Ticker"].apply(_clean_str)
     df["Region"] = df["Region"].apply(_normalize_region)
     df["Benchmark"] = df["Benchmark"].apply(_clean_str)
     df["Type"] = df["Type"].apply(_clean_str)
     df["Thesis"] = df["Thesis"].apply(_clean_str)
+    df["FirstBuyDate"] = df["FirstBuyDate"].apply(_parse_date)
 
-    # Filter out empty / summary rows
     df = df[df["Ticker"].str.len() > 0]
     df = df[~df["Ticker"].str.contains(SUMMARY_NOISE_REGEX, case=False, na=False)]
 
-    # Parse numbers
     df["QTY"] = df["QTY"].apply(_as_float)
     df["AvgCost"] = df["AvgCost"].apply(_as_float)
 
-    # FirstBuyDate (optional)
-    df["FirstBuyDate"] = df["FirstBuyDate"].apply(_parse_date)
-
-    # Drop invalid
     df = df.dropna(subset=["Ticker", "Region", "QTY", "AvgCost"])
     df = df[df["QTY"] != 0]
 
-    # Default benchmark if blank
     df.loc[df["Benchmark"].str.len() == 0, "Benchmark"] = df["Region"].apply(_default_benchmark_for_region)
 
-    # Aggregate duplicates (weighted avg cost); for FirstBuyDate keep the MOST RECENT date
     df["TotalCost"] = df["QTY"] * df["AvgCost"]
     agg = df.groupby(["Ticker", "Region", "Benchmark"], as_index=False).agg(
         QTY=("QTY", "sum"),
         TotalCost=("TotalCost", "sum"),
         Type=("Type", "first"),
         Thesis=("Thesis", "first"),
+        # Most recent date for point-in-time start
         FirstBuyDate=("FirstBuyDate", "max"),
     )
     agg["AvgCost"] = agg["TotalCost"] / agg["QTY"]
 
-    # Keep only valid
     agg = agg.dropna(subset=["Ticker", "QTY", "AvgCost"])
     agg = agg[agg["QTY"] != 0]
-
     return agg.reset_index(drop=True)
 
 # -----------------------------
@@ -201,11 +255,6 @@ def fetch_history_closes(tickers):
 
 @st.cache_data(ttl=300)
 def build_prices(tickers):
-    """
-    Returns dict: {ticker: {"live": x, "prev": y}}
-    live: fast_info last_price if possible else last close
-    prev: fast_info previous_close if possible else previous daily close
-    """
     hist = fetch_history_closes(tickers)
     price_map = {}
 
@@ -227,14 +276,13 @@ def build_prices(tickers):
             last_close, prev_close_fallback = None, None
 
         live_fast, prev_fast = _fast_live_prev(tk)
-
         live = live_fast if live_fast is not None else last_close
         prev = prev_fast if prev_fast is not None else prev_close_fallback
 
         if live is None:
             live = last_close
         if prev is None:
-            prev = live  # day ret becomes 0, avoids crash
+            prev = live
 
         price_map[tk] = {"live": live, "prev": prev}
 
@@ -264,48 +312,38 @@ def fetch_5y_macro():
 
 # -----------------------------
 # Portfolio Growth (Point-in-Time backtest using FirstBuyDate)
-# FX does NOT drive returns: US holdings are converted using FX at START DATE (constant FX)
+# FX does NOT drive returns: US holdings converted using constant FX at start.
 # -----------------------------
 @st.cache_data(ttl=900)
 def build_portfolio_growth_index(df_holdings: pd.DataFrame):
-    """
-    Returns monthly indexed series (base=100) for "My Portfolio"
-    Requires FirstBuyDate present for at least 1 row.
-    """
     if "FirstBuyDate" not in df_holdings.columns:
         return None
 
-    # Keep rows with valid FirstBuyDate
     dff = df_holdings.dropna(subset=["FirstBuyDate"]).copy()
     if dff.empty:
         return None
 
-    # Determine start date (earliest buy)
     start_date = pd.to_datetime(min(dff["FirstBuyDate"])).tz_localize(None)
-    # Pull monthly prices from start to today for all holdings and USDINR (for constant FX)
     tickers = sorted(dff["Ticker"].unique().tolist())
     symbols = list(set(tickers + ["USDINR=X"]))
 
-    px = yf.download(
+    pxd = yf.download(
         tickers=symbols,
-        start=(start_date - pd.Timedelta(days=7)).strftime("%Y-%m-%d"),
+        start=(start_date - pd.Timedelta(days=14)).strftime("%Y-%m-%d"),
         interval="1d",
         progress=False,
         auto_adjust=False,
         threads=True
     )["Close"]
 
-    if px is None or px.empty:
+    if pxd is None or pxd.empty:
         return None
 
-    # Monthly end-of-month prices
-    px_m = px.resample("M").last().dropna(how="all")
+    px_m = pxd.resample("M").last().dropna(how="all")
 
-    # Constant FX at portfolio start month end (or first available)
     fx_series = px_m["USDINR=X"].dropna() if "USDINR=X" in px_m.columns else pd.Series(dtype=float)
     fx0 = float(fx_series.iloc[0]) if not fx_series.empty else 83.0
 
-    # Build value series month by month
     portfolio_value = pd.Series(0.0, index=px_m.index)
 
     for _, r in dff.iterrows():
@@ -318,21 +356,17 @@ def build_portfolio_growth_index(df_holdings: pd.DataFrame):
             continue
 
         s = px_m[tk].copy()
-        # Only include from buy month onward (point-in-time)
-        s.loc[s.index < pd.to_datetime(buy_date).to_period("M").to_timestamp("M")] = pd.NA
+        buy_month_end = pd.to_datetime(buy_date).to_period("M").to_timestamp("M")
+        s.loc[s.index < buy_month_end] = pd.NA
         s = s.ffill()
 
-        # Convert US holdings to INR using constant FX0 (so FX doesn't create "return")
         conv = fx0 if _region_key(region) == "us" else 1.0
         portfolio_value = portfolio_value.add(qty * s * conv, fill_value=0.0)
 
-    # Drop months where portfolio was 0 (before any buys)
     portfolio_value = portfolio_value[portfolio_value > 0]
-
     if portfolio_value.empty:
         return None
 
-    # Index to 100
     idx = (portfolio_value / float(portfolio_value.iloc[0])) * 100.0
     idx.name = "My Portfolio (Indexed)"
     return idx
@@ -353,7 +387,6 @@ if df_sheet.empty:
 holdings = df_sheet["Ticker"].unique().tolist()
 benchmarks = df_sheet["Benchmark"].unique().tolist()
 
-# Symbols to price
 all_symbols = list(set(holdings + benchmarks + ["USDINR=X"] + MACRO_ASSETS))
 
 with st.spinner("Syncing Alpha Terminal..."):
@@ -388,13 +421,10 @@ for _, r in df_sheet.iterrows():
     qty = float(r["QTY"])
     avg = float(r["AvgCost"])
 
-    # Native returns (FX NOT used here)
     total_ret = (live - avg) / avg if avg != 0 else None
     day_ret = (live - prev) / prev if prev != 0 else None
 
-    # Alpha vs benchmark (native)
     alpha_day = None
-    b_day = None
     if bench:
         b_live = float(p_b["live"])
         b_prev = float(p_b["prev"])
@@ -402,13 +432,13 @@ for _, r in df_sheet.iterrows():
         if day_ret is not None and b_day is not None:
             alpha_day = day_ret - b_day
 
-    # INR value ONLY for exposure/weights (FX used ONLY here)
     value_inr = qty * live * (fx_usdinr if _region_key(region) == "us" else 1.0)
 
     rows.append({
         "Ticker": tk,
         "Region": region,
         "Benchmark": bench,
+        "Compared To": _bench_context(bench),
         "QTY": qty,
         "AvgCost": avg,
         "LivePrice": live,
@@ -417,7 +447,7 @@ for _, r in df_sheet.iterrows():
         "Total_Ret": total_ret,
         "Day_Ret": day_ret,
         "Alpha_Day": alpha_day,
-        "Beat_Index_Tag": _status_tag(alpha_day),
+        "Beat_Index_Tag": _status_tag(alpha_day, bench),
         "Type": r.get("Type", ""),
         "Thesis": r.get("Thesis", ""),
         "FirstBuyDate": r.get("FirstBuyDate", pd.NaT),
@@ -431,18 +461,13 @@ if calc_df.empty:
         st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
     st.stop()
 
-# Weights (live value weights)
 calc_df["Weight"] = calc_df["Value_INR"] / calc_df["Value_INR"].sum()
-
-# Portfolio day move (weighted)
 port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
 port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
 
-# Region weights (live exposure)
 in_w = calc_df.loc[calc_df["Region"].str.upper() == "INDIA", "Weight"].sum()
 us_w = calc_df.loc[calc_df["Region"].str.upper() == "US", "Weight"].sum()
 
-# Weighted market benchmark day move: (India*Nifty + US*S&P)
 def _safe_day(sym):
     p = prices.get(sym, None)
     if not p or p["live"] is None or p["prev"] is None or p["prev"] == 0:
@@ -456,8 +481,6 @@ custom_bench_day = None
 if nifty_day is not None and spx_day is not None:
     custom_bench_day = (in_w * nifty_day) + (us_w * spx_day)
 
-# Market beat / behind string
-market_alpha = None
 market_alpha_text = None
 if custom_bench_day is not None:
     market_alpha = port_day - custom_bench_day
@@ -466,32 +489,26 @@ if custom_bench_day is not None:
     else:
         market_alpha_text = f"⚠️ {abs(market_alpha)*100:.2f}% Behind Market"
 
-# Cost-based weights (to explain your 6.68% vs 4.23% discrepancy)
-# This approximates your sheet logic: weight on purchase cost, not live value
-df_cost = df_sheet.copy()
-df_cost["Cost_INR"] = df_cost["TotalCost"] * (fx_usdinr if df_cost["Region"].str.upper().eq("US").any() else 1.0)
-# More exact: convert row-wise
-df_cost["Cost_INR"] = df_cost.apply(
-    lambda r: float(r["TotalCost"]) * (fx_usdinr if _region_key(r["Region"]) == "us" else 1.0),
-    axis=1
-)
-cost_total = df_cost["Cost_INR"].sum() if not df_cost.empty else 0.0
-cost_us_w = (df_cost.loc[df_cost["Region"].str.upper() == "US", "Cost_INR"].sum() / cost_total) if cost_total else 0.0
-cost_in_w = (df_cost.loc[df_cost["Region"].str.upper() == "INDIA", "Cost_INR"].sum() / cost_total) if cost_total else 0.0
-
 # -----------------------------
 # UI (Human-First)
 # -----------------------------
 st.title("🏛️ Global Alpha Strategy Terminal")
-
-# Instructional hook (1 sentence)
 st.markdown(
     "**This terminal compares your picks to their home benchmarks, Nifty 50 for India and S&P 500 for the US, so you can see if you are actually outperforming the market.**"
 )
-
 st.caption(
     "Returns are shown in native currency. FX (USD/INR) is used only to compute portfolio exposure weights (INR value), not to compute returns."
 )
+
+# Market Status badge (Fix #1)
+now_utc = datetime.now(timezone.utc)
+status_text, status_type = _market_status_badge(now_utc, nifty_day, spx_day, calc_df)
+if status_type == "closed":
+    st.info(status_text)
+elif status_type == "mixed":
+    st.warning(status_text)
+else:
+    st.success(status_text)
 
 m1, m2, m3, m4 = st.columns(4)
 
@@ -501,7 +518,7 @@ with m1:
 
 with m2:
     st.metric("Today’s Performance", f"{port_day*100:.2f}%", market_alpha_text if market_alpha_text else None)
-    if custom_bench_day is not None:
+    if custom_bench_day is not None and nifty_day is not None and spx_day is not None:
         st.caption(
             f"Market baseline today = (India {in_w*100:.1f}% × Nifty {nifty_day*100:.2f}%) + (US {us_w*100:.1f}% × S&P {spx_day*100:.2f}%)."
         )
@@ -513,15 +530,8 @@ with m3:
     st.caption("Fetched as USDINR=X. Used only for exposure weights, never for return calculation.")
 
 with m4:
-    st.metric("Last Sync (UTC)", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+    st.metric("Last Sync (UTC)", now_utc.strftime("%Y-%m-%d %H:%M"))
     st.caption("Prices may be delayed (Yahoo Finance).")
-
-with st.expander("🔍 Quick clarity (why your US weight looks different)"):
-    st.write(
-        f"- **Live exposure (what you *own today*):** US {us_w*100:.2f}% | India {in_w*100:.2f}% (based on current market value)\n"
-        f"- **Cost exposure (what you *spent*):** US {cost_us_w*100:.2f}% | India {cost_in_w*100:.2f}% (based on purchase cost)\n\n"
-        "If India positions have doubled while US has not, live exposure shifts heavily toward India even if you initially allocated more to US."
-    )
 
 if failures:
     st.warning("Some rows were skipped due to missing pricing data.")
@@ -530,7 +540,7 @@ if failures:
 st.divider()
 
 # -----------------------------
-# Macro + Allocation
+# Macro + Allocation (Fix #3)
 # -----------------------------
 c1, c2 = st.columns([2, 1])
 
@@ -540,33 +550,66 @@ with c1:
     if macro is None or macro.empty:
         st.info("Macro trend data unavailable right now.")
     else:
-        # Rename columns for readability
-        macro_named = macro.copy()
-        macro_named = macro_named.rename(columns={k: v for k, v in ASSET_LABELS.items() if k in macro_named.columns})
+        # Determine baseline date: earliest FirstBuyDate month-end (if available)
+        baseline_date = None
+        if "FirstBuyDate" in df_sheet.columns and df_sheet["FirstBuyDate"].notna().any():
+            earliest = pd.to_datetime(df_sheet["FirstBuyDate"].dropna().min()).tz_localize(None)
+            baseline_date = earliest.to_period("M").to_timestamp("M")
 
-        # Add portfolio growth line if available
+        # Rename macro columns
+        macro_named = macro.copy().rename(columns={k: v for k, v in ASSET_LABELS.items() if k in macro.columns})
+
+        # Merge portfolio line
         plot_df = macro_named.copy()
-
         if portfolio_idx is not None and not portfolio_idx.empty:
-            # Align portfolio index to macro timeframe
             p = portfolio_idx.copy()
-            # Convert to month-end index for merging
             p.index = pd.to_datetime(p.index).to_period("M").to_timestamp("M")
             plot_df = plot_df.merge(p.to_frame(), left_index=True, right_index=True, how="left")
 
-        # Index all series to 100 at their first available point in the plotted window
         plot_df = plot_df.dropna(how="all").ffill()
-        base = plot_df.iloc[0]
-        plot_idx = (plot_df / base) * 100.0
 
-        long = plot_idx.reset_index().melt(id_vars="Date", var_name="Asset", value_name="Index (Base=100)")
-        fig = px.line(long, x="Date", y="Index (Base=100)", color="Asset")
+        # Re-base all series to 100 at baseline_date (Fix #3)
+        if baseline_date is not None:
+            # keep only dates >= baseline_date
+            plot_df = plot_df[plot_df.index >= baseline_date].copy()
+
+            # if baseline_date not present due to missing month-end, use first available row
+            if plot_df.empty:
+                plot_df = macro_named.dropna(how="all").ffill().copy()
+                if portfolio_idx is not None and not portfolio_idx.empty:
+                    plot_df = plot_df.merge(p.to_frame(), left_index=True, right_index=True, how="left")
+                plot_df = plot_df.dropna(how="all").ffill()
+            base_row = plot_df.iloc[0]
+        else:
+            base_row = plot_df.iloc[0]
+
+        plot_idx = (plot_df / base_row) * 100.0
+
+        # Plot with thicker "My Portfolio" line (polish)
+        fig = go.Figure()
+        for col in plot_idx.columns:
+            name = col
+            width = 4 if "My Portfolio" in col else 2
+            fig.add_trace(go.Scatter(
+                x=plot_idx.index,
+                y=plot_idx[col],
+                mode="lines",
+                name=name,
+                line=dict(width=width),
+            ))
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Index (Base=100)",
+            legend_title="Asset",
+            margin=dict(l=10, r=10, t=20, b=10)
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
         if portfolio_idx is None:
             st.caption("To add 'My Portfolio' line, add FirstBuyDate (YYYY-MM-DD) in your Google Sheet.")
         else:
-            st.caption("‘My Portfolio (Indexed)’ is a point-in-time backtest using FirstBuyDate and constant FX at start, so FX does not drive returns.")
+            st.caption("All lines are re-indexed to 100 on your strategy start date (FirstBuyDate baseline).")
 
 with c2:
     st.subheader("🌎 Currency Risk (Live Exposure)")
@@ -589,7 +632,7 @@ with c2:
 st.divider()
 
 # -----------------------------
-# Picks table (Human labels)
+# Picks table (Fix #2)
 # -----------------------------
 st.subheader("📌 Picks (Did each stock beat its index today?)")
 
@@ -599,7 +642,6 @@ show["Total Ret%"] = show["Total_Ret"].apply(_fmt_pct)
 show["Day Ret%"] = show["Day_Ret"].apply(_fmt_pct)
 show["Score vs Index%"] = show["Alpha_Day"].apply(_fmt_pct)
 
-# Keep a clean benchmark label
 show["Benchmark"] = show["Benchmark"].replace({
     "^GSPC": "^GSPC (S&P 500)",
     "^NSEI": "^NSEI (Nifty 50)",
@@ -609,7 +651,8 @@ show["Benchmark"] = show["Benchmark"].replace({
 
 st.dataframe(
     show[[
-        "Ticker", "Region", "Benchmark", "Weight%", "AvgCost", "LivePrice",
+        "Ticker", "Region", "Benchmark", "Compared To",
+        "Weight%", "AvgCost", "LivePrice",
         "Total Ret%", "Day Ret%", "Beat_Index_Tag", "Score vs Index%"
     ]],
     column_config={
@@ -620,6 +663,7 @@ st.dataframe(
         "Score vs Index%": st.column_config.NumberColumn("Score vs Index", format="%.2f%%"),
         "AvgCost": st.column_config.NumberColumn("Avg Cost", format="%.2f"),
         "LivePrice": st.column_config.NumberColumn("Live Price", format="%.2f"),
+        "Compared To": st.column_config.TextColumn("Compared To"),
     },
     use_container_width=True,
     hide_index=True
