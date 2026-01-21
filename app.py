@@ -21,32 +21,28 @@ def load_data() -> pd.DataFrame:
     return df
 
 @st.cache_data(ttl=300)
-def fetch_prices(tickers_list):
-    tickers_list = [t for t in tickers_list if isinstance(t, str) and t.strip() and t.lower() != "nan"]
-    tickers_list = sorted(list(set([t.strip() for t in tickers_list])))
-
-    if not tickers_list:
-        return pd.DataFrame(columns=["Ticker", "Live Price", "Prev Close"])
-
-    prices = yf.download(
-        tickers=tickers_list,
-        period="5d",
-        interval="1d",
-        progress=False,
-        auto_adjust=False,
-        threads=True
-    )
-
+def fetch_prices_individual(tickers_list):
+    """
+    Streamlit Cloud friendly: fetch per ticker to reduce yf.download failures.
+    Returns: DataFrame with Ticker, Live Price, Prev Close
+    """
     rows = []
+    clean = []
+    for t in tickers_list:
+        if isinstance(t, str) and t.strip() and t.lower() != "nan":
+            clean.append(t.strip())
+    tickers_list = sorted(list(set(clean)))
+
     for t in tickers_list:
         try:
-            if isinstance(prices.columns, pd.MultiIndex):
-                close = prices[t]["Close"].dropna()
-            else:
-                close = prices["Close"].dropna()
+            hist = yf.Ticker(t).history(period="7d", interval="1d")
+            hist = hist.dropna(subset=["Close"])
+            if hist.empty:
+                rows.append({"Ticker": t, "Live Price": None, "Prev Close": None})
+                continue
 
-            live = float(close.iloc[-1]) if len(close) >= 1 else None
-            prev = float(close.iloc[-2]) if len(close) >= 2 else live
+            live = float(hist["Close"].iloc[-1])
+            prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else live
             rows.append({"Ticker": t, "Live Price": live, "Prev Close": prev})
         except Exception:
             rows.append({"Ticker": t, "Live Price": None, "Prev Close": None})
@@ -55,12 +51,11 @@ def fetch_prices(tickers_list):
 
 @st.cache_data(ttl=600)
 def fetch_benchmarks(bench_map, period="3mo"):
+    # Benchmarks are fine with yf.download usually, but keep it simple.
     tickers = list(bench_map.values())
     bench = yf.download(tickers, period=period, interval="1d", progress=False)["Close"]
-
     if isinstance(bench, pd.Series):
         bench = bench.to_frame()
-
     rename_map = {v: k for k, v in bench_map.items()}
     bench = bench.rename(columns=rename_map)
     bench = bench.dropna(how="all").ffill()
@@ -87,30 +82,23 @@ if missing:
     st.info("Your sheet must include exactly: Ticker, PORTFOLIO WEIGHT, AvgCost, Type, Thesis, Region, Benchmark")
     st.stop()
 
-# Clean columns
 df["Ticker"] = df["Ticker"].astype(str).str.strip()
 df["Type"] = df["Type"].astype(str).fillna("").str.strip()
 df["Thesis"] = df["Thesis"].astype(str).fillna("").str.strip()
 df["Region"] = df["Region"].astype(str).fillna("").str.strip()
 df["Benchmark"] = df["Benchmark"].astype(str).fillna("").str.strip()
-
-# Parse AvgCost
 df["AvgCost"] = pd.to_numeric(df["AvgCost"], errors="coerce")
 
-# Parse weights (accept "15.29%" OR 15.29)
+# weights accept "15.29%" or 15.29
 w = df["PORTFOLIO WEIGHT"].astype(str).str.replace("%", "", regex=False).str.strip()
-df["Weight"] = pd.to_numeric(w, errors="coerce")
+df["Weight"] = pd.to_numeric(w, errors="coerce") / 100.0
 
-# Drop bad rows
 df = df.dropna(subset=["Ticker", "AvgCost", "Weight", "Region"])
 
-# Convert to decimals
-df["Weight"] = df["Weight"] / 100.0
-
-# Prices
 tickers = df["Ticker"].dropna().unique().tolist()
+
 with st.spinner("Syncing market data..."):
-    prices_df = fetch_prices(tickers)
+    prices_df = fetch_prices_individual(tickers)
 
 df = df.merge(prices_df, on="Ticker", how="left")
 
@@ -122,23 +110,20 @@ mask = (df["AvgCost"] > 0) & (df["Live Price"].notna())
 df.loc[mask, "Stock Return %"] = ((df.loc[mask, "Live Price"] / df.loc[mask, "AvgCost"]) - 1) * 100
 
 df["Contribution %"] = df["Weight"] * df["Stock Return %"]
-
-# Portfolio return (overall)
 portfolio_return = df["Contribution %"].sum(skipna=True)
 
-# Day return (approx using Prev Close)
+# Day return
 df["Day Return %"] = None
 mask_day = (df["Prev Close"].notna()) & (df["Prev Close"] > 0) & (df["Live Price"].notna())
 df.loc[mask_day, "Day Return %"] = ((df.loc[mask_day, "Live Price"] / df.loc[mask_day, "Prev Close"]) - 1) * 100
 df["Day Contribution %"] = df["Weight"] * df["Day Return %"]
 portfolio_day_return = df["Day Contribution %"].sum(skipna=True)
 
-# Regional normalized returns (so India shows performance even if weights sum to 1.0 within India only)
 def region_return(dfr):
     wsum = dfr["Weight"].sum()
     if wsum <= 0:
         return 0.0
-    return (dfr["Contribution %"].sum(skipna=True) / wsum)
+    return float(dfr["Contribution %"].sum(skipna=True) / wsum)
 
 regions = sorted(df["Region"].unique().tolist())
 region_perf = {r: region_return(df[df["Region"] == r]) for r in regions}
@@ -155,16 +140,26 @@ c2.metric("Day Return (Approx)", f"{portfolio_day_return:.2f}%")
 c3.metric("Holdings Count", f"{len(df)}")
 c4.metric("Last Sync (UTC)", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
 
+# -----------------------------
+# 6) DEBUG (THIS WILL SHOW YOU WHAT IS FAILING)
+# -----------------------------
+with st.expander("🔧 Debug: price fetch status", expanded=False):
+    missing_px = df[df["Live Price"].isna()][["Ticker", "Region", "AvgCost", "Weight"]]
+    st.write(f"Tickers missing Live Price: {len(missing_px)}")
+    if len(missing_px) > 0:
+        st.dataframe(missing_px, use_container_width=True)
+    st.dataframe(df[["Ticker", "AvgCost", "Weight", "Live Price", "Prev Close"]], use_container_width=True)
+
 st.divider()
 
 # -----------------------------
-# 6) TABS
+# 7) TABS
 # -----------------------------
 tab1, tab2, tab3 = st.tabs(["🌎 Global Summary", "📌 Holdings + Thesis", "📈 Benchmarks"])
 
 with tab1:
     st.subheader("Global Allocation")
-    alloc = df.groupby(["Region"])["Weight"].sum().reset_index()
+    alloc = df.groupby("Region")["Weight"].sum().reset_index()
     alloc["Weight %"] = alloc["Weight"] * 100
 
     fig_alloc = px.bar(alloc, x="Region", y="Weight %", text="Weight %", title="Portfolio Weight by Region")
@@ -172,7 +167,7 @@ with tab1:
 
     st.subheader("Regional Performance (Normalized)")
     perf_df = pd.DataFrame({"Region": list(region_perf.keys()), "Return %": list(region_perf.values())})
-    fig_perf = px.bar(perf_df, x="Region", y="Return %", text="Return %", title="Region Return % (normalized by region weights)")
+    fig_perf = px.bar(perf_df, x="Region", y="Return %", text="Return %", title="Region Return % (normalized)")
     st.plotly_chart(fig_perf, use_container_width=True)
 
     st.subheader("Top Contributors")
@@ -180,7 +175,7 @@ with tab1:
     st.dataframe(
         topc[["Ticker", "Region", "Type", "Weight", "Stock Return %", "Contribution %"]],
         column_config={
-            "Weight": st.column_config.NumberColumn(format="%.2f"),
+            "Weight": st.column_config.NumberColumn(format="%.4f"),
             "Stock Return %": st.column_config.NumberColumn(format="%.2f %%"),
             "Contribution %": st.column_config.NumberColumn(format="%.2f %%"),
         },
@@ -190,7 +185,6 @@ with tab1:
 
 with tab2:
     st.subheader("📊 Holdings (Weights-based)")
-
     show_df = df.copy()
     show_df["Weight %"] = show_df["Weight"] * 100
 
@@ -209,11 +203,10 @@ with tab2:
 
     st.divider()
     st.subheader("🧠 Thesis Viewer")
-
     tickers_sorted = sorted(df["Ticker"].dropna().unique().tolist())
     selected = st.selectbox("Select a ticker", tickers_sorted)
-
     row = df[df["Ticker"] == selected].iloc[0]
+
     st.markdown(f"**Region:** {row.get('Region','')}")
     st.markdown(f"**Type:** {row.get('Type','')}")
     st.markdown(f"**Weight:** {(row.get('Weight',0)*100):.2f}%")
@@ -221,9 +214,6 @@ with tab2:
 
 with tab3:
     st.subheader("Benchmarks (Indexed to 100)")
-
-    # If you want to use YOUR sheet Benchmark column later, we can.
-    # For now, use the standard set + allow user to toggle.
     bench_map = {"S&P 500": "^GSPC", "NIFTY 50": "^NSEI", "Gold": "GC=F"}
 
     try:
@@ -236,14 +226,10 @@ with tab3:
             var_name="Benchmark",
             value_name="Index (Base=100)"
         )
-
         fig = px.line(bench_norm, x="Date", y="Index (Base=100)", color="Benchmark")
         st.plotly_chart(fig, use_container_width=True)
     except Exception:
         st.info("Benchmark chart temporarily unavailable.")
 
-# -----------------------------
-# 7) FOOTER
-# -----------------------------
 st.divider()
 st.caption("Data source: Yahoo Finance (may be delayed). Educational project, not investment advice.")
