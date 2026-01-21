@@ -1,199 +1,184 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone
 import plotly.express as px
 
-st.set_page_config(page_title="Global Alpha Strategy", layout="wide", page_icon="📈")
+# --- SETUP ---
+st.set_page_config(page_title="Global Alpha Terminal", layout="wide", page_icon="🏛️")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
 
-# -----------------------------
-# HELPERS
-# -----------------------------
-def parse_weight_to_decimal(series: pd.Series) -> pd.Series:
-    """
-    Accepts:
-      "15.29%" -> 0.1529
-      15.29    -> 0.1529 (assume percent)
-      0.1529   -> 0.1529 (already decimal)
-    """
-    s = series.astype(str).str.strip().str.replace("%", "", regex=False).str.replace(",", "", regex=False)
-    w = pd.to_numeric(s, errors="coerce")
-    return w.where(w <= 1, w / 100.0)
-
+# --- 1. DEFENSIVE DATA LOADING (ChatGPT logic + Gemini Lean style) ---
 @st.cache_data(ttl=300)
-def load_data():
-    df = pd.read_csv(SHEET_URL)
-    df.columns = df.columns.str.strip()
+def load_and_clean_data(url):
+    try:
+        df = pd.read_csv(url)
+        df.columns = df.columns.str.strip()
+        
+        # Filter out empty or summary rows
+        df = df[df['Ticker'].notna()]
+        df = df[~df['Ticker'].str.contains("TOTAL|PORTFOLIO|SUMMARY|CASH", case=False, na=False)]
+        
+        # Region Normalizer
+        def normalize_region(r):
+            r = str(r).upper().strip()
+            if r in ['US', 'USA', 'UNITED STATES']: return 'US'
+            if r in ['INDIA', 'IN', 'IND']: return 'India'
+            return r
+        df['Region'] = df['Region'].apply(normalize_region)
+        
+        # Numeric Force
+        df['QTY'] = pd.to_numeric(df['QTY'], errors='coerce')
+        df['AvgCost'] = pd.to_numeric(df['AvgCost'], errors='coerce')
+        
+        # Aggregate Duplicates (Handle multiple buys)
+        df['Total_Cost'] = df['QTY'] * df['AvgCost']
+        agg = df.groupby(['Ticker', 'Region', 'Benchmark']).agg({
+            'QTY': 'sum',
+            'Total_Cost': 'sum',
+            'Type': 'first',
+            'Thesis': 'first'
+        }).reset_index()
+        agg['AvgCost'] = agg['Total_Cost'] / agg['QTY']
+        
+        return agg.dropna(subset=['Ticker', 'QTY', 'AvgCost'])
+    except Exception as e:
+        st.error(f"Spreadsheet Error: {e}")
+        return pd.DataFrame()
 
-    # remove summary rows like "India Portfolio", "US Portfolio", "Total"
-    if "Ticker" in df.columns:
-        df["Ticker"] = df["Ticker"].astype(str)
-        df = df[~df["Ticker"].str.contains("PORTFOLIO|TOTAL", case=False, na=False)]
-        df = df[df["Ticker"].str.lower().ne("nan")]
-        df = df.dropna(subset=["Ticker"])
-
-    return df
-
-@st.cache_data(ttl=300)
-def fetch_market_data(tickers):
-    """
-    Live:
-      - intraday 5m last close (more live)
-      - fallback to latest daily close
-    Prev:
-      - previous daily close (yesterday)
-    """
-    rows = []
+# --- 2. FAST-INFO PRICE ENGINE ---
+def get_live_and_prev(tickers):
+    # Combined approach: yfinance download for history + fast_info for intraday
+    data = yf.download(tickers, period="5d", interval="1d", progress=False)['Close']
+    price_map = {}
+    
     for t in tickers:
-        live, prev = None, None
-
-        # 1) intraday "live-ish"
         try:
-            intraday = yf.download(t, period="1d", interval="5m", progress=False)
-            if not intraday.empty:
-                c = intraday["Close"].dropna()
-                if len(c) > 0:
-                    live = float(c.iloc[-1])
-        except Exception:
-            pass
+            # Fallback chain for live price
+            ticker_obj = yf.Ticker(t)
+            live = ticker_obj.fast_info.get("last_price")
+            
+            series = data[t].dropna()
+            if live is None or pd.isna(live):
+                live = float(series.iloc[-1])
+            
+            # Prev close is always the one prior to today's data
+            prev = float(series.iloc[-2]) if len(series) >= 2 else live
+            
+            price_map[t] = {'live': live, 'prev': prev}
+        except:
+            price_map[t] = {'live': None, 'prev': None}
+    return price_map
 
-        # 2) daily fallback + prev close
-        try:
-            daily = yf.download(t, period="10d", interval="1d", progress=False)
-            dc = daily["Close"].dropna()
+# --- DATA EXECUTION ---
+df_sheet = load_and_clean_data(SHEET_URL)
+if df_sheet.empty: st.stop()
 
-            if live is None and len(dc) >= 1:
-                live = float(dc.iloc[-1])
+all_tickers = list(set(df_sheet['Ticker'].tolist() + df_sheet['Benchmark'].tolist() + ["USDINR=X", "^GSPC", "^NSEI", "GC=F"]))
 
-            if len(dc) >= 2:
-                prev = float(dc.iloc[-2])
-            elif len(dc) == 1:
-                prev = float(dc.iloc[-1])
-        except Exception:
-            pass
+with st.spinner("Executing Alpha Engine..."):
+    prices = get_live_and_prev(all_tickers)
+    live_fx = prices.get("USDINR=X", {}).get("live", 83.5)
+    trend_data = yf.download(["^GSPC", "^NSEI", "GC=F"], period="5y", interval="1mo", progress=False)['Close']
 
-        rows.append({"Ticker": t, "Live": live, "Prev": prev})
+# --- 3. ALPHA CALCULATIONS ---
+rows = []
+failures = []
 
-    return pd.DataFrame(rows)
+for _, row in df_sheet.iterrows():
+    t, b = row['Ticker'], row['Benchmark']
+    p_tk = prices.get(t, {})
+    p_bench = prices.get(b, {})
 
-# -----------------------------
-# DATA ENGINE
-# -----------------------------
-try:
-    df = load_data()
+    if p_tk.get('live') and p_bench.get('live'):
+        # Native Performance (FX Ignored)
+        s_total_ret = (p_tk['live'] - row['AvgCost']) / row['AvgCost']
+        s_day_ret = (p_tk['live'] - p_tk['prev']) / p_tk['prev']
+        
+        # Benchmark Performance
+        b_day_ret = (p_bench['live'] - p_bench['prev']) / p_bench['prev']
+        
+        # Individual Alpha (Philosophy: Did the pick beat its benchmark today?)
+        alpha_day = s_day_ret - b_day_ret
+        
+        # Global Weighting (Value in INR)
+        val_inr = row['QTY'] * p_tk['live'] * (live_fx if row['Region'] == 'US' else 1.0)
+        
+        rows.append({
+            "Ticker": t, "Region": row['Region'], "Benchmark": b, 
+            "Value_INR": val_inr, "Total_Ret": s_total_ret, 
+            "Day_Ret": s_day_ret, "Alpha_Day": alpha_day,
+            "Type": row.get('Type', ''), "Thesis": row.get('Thesis', '')
+        })
+    else:
+        failures.append(t)
 
-    required = ["Ticker", "PORTFOLIO WEIGHT", "AvgCost", "Type", "Thesis", "Region"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        st.error(f"Header Mismatch: Missing {missing}")
-        st.stop()
+calc_df = pd.DataFrame(rows)
+calc_df['Weight'] = calc_df['Value_INR'] / calc_df['Value_INR'].sum()
 
-    df["AvgCost"] = pd.to_numeric(df["AvgCost"], errors="coerce")
-    df["Weight"] = parse_weight_to_decimal(df["PORTFOLIO WEIGHT"])
-    df["Region"] = df["Region"].astype(str).fillna("").str.strip()
-    df["Thesis"] = df["Thesis"].astype(str).fillna("").str.strip()
+# --- 4. WEIGHTED BENCHMARK LOGIC ---
+in_weight = calc_df[calc_df['Region'] == 'India']['Weight'].sum()
+us_weight = calc_df[calc_df['Region'] == 'US']['Weight'].sum()
 
-    df = df.dropna(subset=["Ticker", "AvgCost", "Weight"])
-    df = df[df["Weight"] > 0]
+nifty_day = (prices["^NSEI"]['live'] / prices["^NSEI"]['prev']) - 1
+sp500_day = (prices["^GSPC"]['live'] / prices["^GSPC"]['prev']) - 1
 
-    if df.empty:
-        st.error("No valid rows after cleaning. Check that PORTFOLIO WEIGHT and AvgCost are numeric.")
-        st.stop()
+custom_bench_day = (in_weight * nifty_day) + (us_weight * sp500_day)
+port_day = (calc_df['Day_Ret'] * calc_df['Weight']).sum()
+port_total = (calc_df['Total_Ret'] * calc_df['Weight']).sum()
 
-    price_info = fetch_market_data(df["Ticker"].tolist())
-    df = df.merge(price_info, on="Ticker", how="left")
+# --- 5. UI DISPLAY ---
+st.title("🏛️ Global Alpha Terminal")
+st.caption(f"Sync Time: {datetime.now(timezone.utc).strftime('%H:%M')} UTC | Benchmarks: Nifty 50, S&P 500, Gold")
 
-    # CALCULATIONS
-    df["Stock Return %"] = ((df["Live"] - df["AvgCost"]) / df["AvgCost"]) * 100
-    df["Day Return %"] = ((df["Live"] - df["Prev"]) / df["Prev"]) * 100
+m1, m2, m3 = st.columns(3)
+m1.metric("Strategy Total Return", f"{port_total*100:.2f}%")
+m2.metric("Portfolio Day Move", f"{port_day*100:.2f}%", f"{(port_day - custom_bench_day)*100:.2f}% vs Weighted Market")
+m3.metric("Live USD/INR", f"{live_fx:.2f}")
 
-    df["W_Return"] = df["Weight"] * df["Stock Return %"]
-    df["W_Day"] = df["Weight"] * df["Day Return %"]
-
-except Exception as e:
-    st.error(f"Critical Error: {e}")
-    st.stop()
-
-# -----------------------------
-# UI - HEADER
-# -----------------------------
-st.title("🏛️ Global Alpha Strategy Terminal")
-c1, c2, c3, c4 = st.columns(4)
-
-total_ret = df["W_Return"].sum(skipna=True)
-day_ret = df["W_Day"].sum(skipna=True)
-
-c1.metric("Overall Strategy Return", f"{total_ret:.2f}%")
-c2.metric("Day Change (Weighted)", f"{day_ret:.2f}%")
-c3.metric("Assets Tracked", int(df["Ticker"].nunique()))
-c4.metric("Last Sync", datetime.now().strftime("%H:%M:%S"))
+if failures:
+    st.warning(f"⚠️ Pricing failed for: {', '.join(failures)}. Check Ticker symbols.")
 
 st.divider()
 
-with st.expander("🔧 Debug: price fetch status"):
-    st.write(f"Tickers missing Live: {int(df['Live'].isna().sum())}")
-    st.dataframe(df[["Ticker", "PORTFOLIO WEIGHT", "Weight", "AvgCost", "Live", "Prev"]], use_container_width=True)
-
-# -----------------------------
-# TABS
-# -----------------------------
-tab1, tab2, tab3 = st.tabs(["🌎 Global View", "📌 Holdings & Thesis", "📈 Benchmarks"])
+tab1, tab2, tab3 = st.tabs(["🌎 Global View", "📌 Pick Analysis", "📈 5Y Macro"])
 
 with tab1:
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        reg_df = df.groupby("Region")["Weight"].sum().reset_index()
-        fig1 = px.pie(reg_df, values="Weight", names="Region", title="Regional Exposure", hole=0.4)
-        st.plotly_chart(fig1, use_container_width=True)
-
-    with col_b:
-        reg_perf = df.groupby("Region").apply(lambda x: (x["W_Return"].sum() / x["Weight"].sum())).reset_index()
-        reg_perf.columns = ["Region", "Perf %"]
-        fig2 = px.bar(reg_perf, x="Region", y="Perf %", title="Regional Performance (Normalized)")
-        st.plotly_chart(fig2, use_container_width=True)
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        # Indexed 5Y Chart
+        trend_norm = (trend_data / trend_data.iloc[0] * 100)
+        fig = px.line(trend_norm, title="5-Year Macro Benchmarks (Indexed to 100)")
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with c2:
+        # Regional Pie
+        fig_pie = px.pie(calc_df, values='Weight', names='Region', hole=0.5, title="Currency Exposure (INR Value)")
+        st.plotly_chart(fig_pie, use_container_width=True)
+        st.info(f"**India Allocation:** {in_weight*100:.2f}%")
+        st.success(f"**US Allocation:** {us_weight*100:.2f}%")
 
 with tab2:
-    st.subheader("Interactive Strategy Map")
-
+    st.subheader("Performance & Alpha Matrix")
     st.dataframe(
-        df[["Ticker", "Region", "Weight", "AvgCost", "Live", "Prev", "Stock Return %", "Day Return %"]],
+        calc_df[['Ticker', 'Region', 'Weight', 'Total_Ret', 'Day_Ret', 'Alpha_Day']],
         column_config={
-            "Weight": st.column_config.NumberColumn(format="%.2%"),
-            "Stock Return %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Day Return %": st.column_config.NumberColumn(format="%.2f%%"),
+            "Weight": st.column_config.NumberColumn(format="%.2f%%"),
+            "Total_Ret": st.column_config.NumberColumn("Total Ret", format="%.2f%%"),
+            "Day_Ret": st.column_config.NumberColumn("Day Ret", format="%.2f%%"),
+            "Alpha_Day": st.column_config.NumberColumn("Alpha (vs Bench)", format="%.2f%%"),
         },
-        hide_index=True,
-        use_container_width=True
+        use_container_width=True, hide_index=True
     )
-
+    
     st.divider()
-
-    tickers = sorted(df["Ticker"].unique().tolist())
-    selected = st.selectbox("Select Asset to view Thesis", tickers)
-    selection_df = df[df["Ticker"] == selected]
-
-    if not selection_df.empty:
-        row = selection_df.iloc[0]
-        st.info(f"**{selected} Thesis:** {row['Thesis'] if pd.notna(row['Thesis']) else 'No notes added.'}")
-    else:
-        st.warning("Select a valid ticker to view details.")
+    # Detailed Pick Breakdown
+    sel_ticker = st.selectbox("View Pick Thesis", sorted(calc_df['Ticker'].tolist()))
+    pick_data = calc_df[calc_df['Ticker'] == sel_ticker].iloc[0]
+    st.write(f"**Type:** {pick_data['Type']} | **Benchmark:** {pick_data['Benchmark']}")
+    st.text_area("Investment Thesis", value=pick_data['Thesis'], height=150, disabled=True)
 
 with tab3:
-    st.subheader("Performance vs. Market Benchmarks")
-    bench_map = {"S&P 500": "^GSPC", "Nifty 50": "^NSEI", "Gold": "GC=F"}
-
-    try:
-        b_data = yf.download(list(bench_map.values()), period="3mo", interval="1d", progress=False)["Close"]
-        if isinstance(b_data, pd.Series):
-            b_data = b_data.to_frame()
-
-        b_data = b_data.dropna(how="all").ffill()
-        b_norm = (b_data / b_data.iloc[0] * 100)
-
-        fig_b = px.line(b_norm, title="3-Month Indexed Performance (Base 100)")
-        st.plotly_chart(fig_b, use_container_width=True)
-    except Exception:
-        st.info("Benchmark chart temporarily unavailable.")
+    st.subheader("Benchmark Comparison (Raw Prices)")
+    st.dataframe(trend_data.tail(10), use_container_width=True)
