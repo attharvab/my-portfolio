@@ -11,21 +11,14 @@ st.set_page_config(page_title="Global Alpha Strategy", layout="wide", page_icon=
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
 
+# -----------------------------
+# 2) HELPERS
+# -----------------------------
 @st.cache_data(ttl=300)
-def load_data():
+def load_data() -> pd.DataFrame:
     df = pd.read_csv(SHEET_URL)
     df.columns = df.columns.str.strip()
     return df
-
-@st.cache_data(ttl=1800)
-def get_usdinr_rate():
-    """Fetch USD/INR FX rate. Fallback if Yahoo fails."""
-    try:
-        fx = yf.download("USDINR=X", period="5d", interval="1d", progress=False)
-        rate = float(fx["Close"].dropna().iloc[-1])
-        return rate if rate > 0 else 83.0
-    except Exception:
-        return 83.0  # fallback
 
 @st.cache_data(ttl=300)
 def fetch_prices(tickers_list):
@@ -50,7 +43,6 @@ def fetch_prices(tickers_list):
             if isinstance(prices.columns, pd.MultiIndex):
                 close = prices[t]["Close"].dropna()
             else:
-                # single ticker fallback
                 close = prices["Close"].dropna()
 
             live = float(close.iloc[-1]) if len(close) >= 1 else None
@@ -61,8 +53,22 @@ def fetch_prices(tickers_list):
 
     return pd.DataFrame(rows)
 
+@st.cache_data(ttl=600)
+def fetch_benchmarks(bench_map, period="3mo"):
+    tickers = list(bench_map.values())
+    bench = yf.download(tickers, period=period, interval="1d", progress=False)["Close"]
+
+    if isinstance(bench, pd.Series):
+        bench = bench.to_frame()
+
+    rename_map = {v: k for k, v in bench_map.items()}
+    bench = bench.rename(columns=rename_map)
+    bench = bench.dropna(how="all").ffill()
+    bench = bench.loc[bench.notna().any(axis=1)]
+    return bench
+
 # -----------------------------
-# 2) LOAD + VALIDATE
+# 3) LOAD + VALIDATE
 # -----------------------------
 try:
     df = load_data()
@@ -71,104 +77,129 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.warning("Google Sheet is empty. Add tickers like AAPL or RELIANCE.NS.")
+    st.warning("Google Sheet is empty.")
     st.stop()
 
-required = ["Ticker", "Quantity", "AvgCost", "Type", "Thesis"]
+required = ["Ticker", "PORTFOLIO WEIGHT", "AvgCost", "Type", "Thesis", "Region", "Benchmark"]
 missing = [c for c in required if c not in df.columns]
 if missing:
     st.error(f"Header Mismatch: Missing {missing}")
-    st.info("Your sheet must include exactly: Ticker, Quantity, AvgCost, Type, Thesis")
+    st.info("Your sheet must include exactly: Ticker, PORTFOLIO WEIGHT, AvgCost, Type, Thesis, Region, Benchmark")
     st.stop()
 
-# Clean types
+# Clean columns
 df["Ticker"] = df["Ticker"].astype(str).str.strip()
-df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
-df["AvgCost"] = pd.to_numeric(df["AvgCost"], errors="coerce")
-
-# Keep Type/Thesis as text
 df["Type"] = df["Type"].astype(str).fillna("").str.strip()
 df["Thesis"] = df["Thesis"].astype(str).fillna("").str.strip()
+df["Region"] = df["Region"].astype(str).fillna("").str.strip()
+df["Benchmark"] = df["Benchmark"].astype(str).fillna("").str.strip()
 
-# Drop rows missing essentials
-df = df.dropna(subset=["Ticker", "Quantity", "AvgCost"])
+# Parse AvgCost
+df["AvgCost"] = pd.to_numeric(df["AvgCost"], errors="coerce")
 
+# Parse weights (accept "15.29%" OR 15.29)
+w = df["PORTFOLIO WEIGHT"].astype(str).str.replace("%", "", regex=False).str.strip()
+df["Weight"] = pd.to_numeric(w, errors="coerce")
+
+# Drop bad rows
+df = df.dropna(subset=["Ticker", "AvgCost", "Weight", "Region"])
+
+# Convert to decimals
+df["Weight"] = df["Weight"] / 100.0
+
+# Prices
 tickers = df["Ticker"].dropna().unique().tolist()
-
-with st.spinner("Syncing Global Market Data..."):
+with st.spinner("Syncing market data..."):
     prices_df = fetch_prices(tickers)
-    usd_inr_rate = get_usdinr_rate()
 
 df = df.merge(prices_df, on="Ticker", how="left")
 
 # -----------------------------
-# 3) FLAGS + LOCAL CALCS
+# 4) RETURNS (WEIGHTS MODEL)
 # -----------------------------
-df["Is_India"] = df["Ticker"].str.contains(r"\.(NS|BO)$", case=False, na=False, regex=True)
+df["Stock Return %"] = None
+mask = (df["AvgCost"] > 0) & (df["Live Price"].notna())
+df.loc[mask, "Stock Return %"] = ((df.loc[mask, "Live Price"] / df.loc[mask, "AvgCost"]) - 1) * 100
 
-df["Market Value Local"] = df["Quantity"] * df["Live Price"]
-df["Cost Basis Local"] = df["Quantity"] * df["AvgCost"]
+df["Contribution %"] = df["Weight"] * df["Stock Return %"]
 
-df["Market Value (USD)"] = df.apply(
-    lambda x: x["Market Value Local"] / usd_inr_rate if x["Is_India"] else x["Market Value Local"], axis=1
-)
-df["Cost Basis (USD)"] = df.apply(
-    lambda x: x["Cost Basis Local"] / usd_inr_rate if x["Is_India"] else x["Cost Basis Local"], axis=1
-)
+# Portfolio return (overall)
+portfolio_return = df["Contribution %"].sum(skipna=True)
 
-# -----------------------------
-# 4) P&L CALCS
-# -----------------------------
-df["Gain/Loss %"] = None
-mask = (df["AvgCost"].notna()) & (df["AvgCost"] > 0) & (df["Live Price"].notna())
-df.loc[mask, "Gain/Loss %"] = ((df.loc[mask, "Live Price"] - df.loc[mask, "AvgCost"]) / df.loc[mask, "AvgCost"]) * 100
+# Day return (approx using Prev Close)
+df["Day Return %"] = None
+mask_day = (df["Prev Close"].notna()) & (df["Prev Close"] > 0) & (df["Live Price"].notna())
+df.loc[mask_day, "Day Return %"] = ((df.loc[mask_day, "Live Price"] / df.loc[mask_day, "Prev Close"]) - 1) * 100
+df["Day Contribution %"] = df["Weight"] * df["Day Return %"]
+portfolio_day_return = df["Day Contribution %"].sum(skipna=True)
 
-df["Total Gain (USD)"] = df["Market Value (USD)"] - df["Cost Basis (USD)"]
+# Regional normalized returns (so India shows performance even if weights sum to 1.0 within India only)
+def region_return(dfr):
+    wsum = dfr["Weight"].sum()
+    if wsum <= 0:
+        return 0.0
+    return (dfr["Contribution %"].sum(skipna=True) / wsum)
 
-total_value_usd = df["Market Value (USD)"].sum(skipna=True)
-total_cost_usd = df["Cost Basis (USD)"].sum(skipna=True)
-total_gain_usd = total_value_usd - total_cost_usd
-total_gain_pct = (total_gain_usd / total_cost_usd * 100) if total_cost_usd else 0
-
-day_gain_usd = None
-try:
-    df["Day Gain Local"] = df["Quantity"] * (df["Live Price"] - df["Prev Close"])
-    df["Day Gain (USD)"] = df.apply(
-        lambda x: x["Day Gain Local"] / usd_inr_rate if x["Is_India"] else x["Day Gain Local"], axis=1
-    )
-    day_gain_usd = df["Day Gain (USD)"].sum(skipna=True)
-except Exception:
-    day_gain_usd = None
+regions = sorted(df["Region"].unique().tolist())
+region_perf = {r: region_return(df[df["Region"] == r]) for r in regions}
 
 # -----------------------------
 # 5) UI HEADER
 # -----------------------------
 st.title("🌍 Global Alpha Strategy Terminal")
-st.markdown(f"**Portfolio Currency: USD** | FX: 1 USD = **{usd_inr_rate:.2f} INR**")
+st.caption("Weights-based dashboard (no real investment values).")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Net Liquidity", f"${total_value_usd:,.2f}")
-c2.metric("Total P&L (USD)", f"${total_gain_usd:,.2f}", f"{total_gain_pct:,.2f}%")
-c3.metric("Day P&L (USD)", f"${day_gain_usd:,.2f}" if day_gain_usd is not None else "NA")
+c1.metric("Portfolio Return (Since AvgCost)", f"{portfolio_return:.2f}%")
+c2.metric("Day Return (Approx)", f"{portfolio_day_return:.2f}%")
+c3.metric("Holdings Count", f"{len(df)}")
 c4.metric("Last Sync (UTC)", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
 
 st.divider()
 
 # -----------------------------
-# 6) HOLDINGS TABLE + THESIS PANEL
+# 6) TABS
 # -----------------------------
-st.subheader("📌 Portfolio + Notes")
+tab1, tab2, tab3 = st.tabs(["🌎 Global Summary", "📌 Holdings + Thesis", "📈 Benchmarks"])
 
-left, right = st.columns([2, 1], gap="large")
+with tab1:
+    st.subheader("Global Allocation")
+    alloc = df.groupby(["Region"])["Weight"].sum().reset_index()
+    alloc["Weight %"] = alloc["Weight"] * 100
 
-with left:
-    st.subheader("📊 Active Holdings")
+    fig_alloc = px.bar(alloc, x="Region", y="Weight %", text="Weight %", title="Portfolio Weight by Region")
+    st.plotly_chart(fig_alloc, use_container_width=True)
+
+    st.subheader("Regional Performance (Normalized)")
+    perf_df = pd.DataFrame({"Region": list(region_perf.keys()), "Return %": list(region_perf.values())})
+    fig_perf = px.bar(perf_df, x="Region", y="Return %", text="Return %", title="Region Return % (normalized by region weights)")
+    st.plotly_chart(fig_perf, use_container_width=True)
+
+    st.subheader("Top Contributors")
+    topc = df.dropna(subset=["Contribution %"]).sort_values("Contribution %", ascending=False).head(10)
     st.dataframe(
-        df[["Ticker", "Type", "Quantity", "AvgCost", "Live Price", "Gain/Loss %", "Market Value (USD)", "Total Gain (USD)"]],
+        topc[["Ticker", "Region", "Type", "Weight", "Stock Return %", "Contribution %"]],
         column_config={
-            "Gain/Loss %": st.column_config.NumberColumn(format="%.2f %%"),
-            "Market Value (USD)": st.column_config.NumberColumn(format="$ %.2f"),
-            "Total Gain (USD)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Weight": st.column_config.NumberColumn(format="%.2f"),
+            "Stock Return %": st.column_config.NumberColumn(format="%.2f %%"),
+            "Contribution %": st.column_config.NumberColumn(format="%.2f %%"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+with tab2:
+    st.subheader("📊 Holdings (Weights-based)")
+
+    show_df = df.copy()
+    show_df["Weight %"] = show_df["Weight"] * 100
+
+    st.dataframe(
+        show_df[["Ticker", "Region", "Type", "Weight %", "AvgCost", "Live Price", "Stock Return %", "Contribution %"]],
+        column_config={
+            "Weight %": st.column_config.NumberColumn(format="%.2f %%"),
+            "Stock Return %": st.column_config.NumberColumn(format="%.2f %%"),
+            "Contribution %": st.column_config.NumberColumn(format="%.2f %%"),
             "Live Price": st.column_config.NumberColumn(format="%.2f"),
             "AvgCost": st.column_config.NumberColumn(format="%.2f"),
         },
@@ -176,70 +207,43 @@ with left:
         hide_index=True
     )
 
-with right:
+    st.divider()
+    st.subheader("🧠 Thesis Viewer")
+
     tickers_sorted = sorted(df["Ticker"].dropna().unique().tolist())
     selected = st.selectbox("Select a ticker", tickers_sorted)
 
     row = df[df["Ticker"] == selected].iloc[0]
+    st.markdown(f"**Region:** {row.get('Region','')}")
+    st.markdown(f"**Type:** {row.get('Type','')}")
+    st.markdown(f"**Weight:** {(row.get('Weight',0)*100):.2f}%")
+    st.text_area("Investment thesis (edit in Google Sheet)", value=str(row.get("Thesis","")), height=220)
 
-    st.markdown("### 🧠 Thesis")
-    type_text = row.get("Type", "")
-    thesis_text = row.get("Thesis", "")
+with tab3:
+    st.subheader("Benchmarks (Indexed to 100)")
 
-    st.markdown(f"**Type:** {type_text if pd.notna(type_text) else ''}")
+    # If you want to use YOUR sheet Benchmark column later, we can.
+    # For now, use the standard set + allow user to toggle.
+    bench_map = {"S&P 500": "^GSPC", "NIFTY 50": "^NSEI", "Gold": "GC=F"}
 
-    st.text_area(
-        "Investment thesis (edit in Google Sheet)",
-        value=str(thesis_text) if pd.notna(thesis_text) else "",
-        height=260
-    )
+    try:
+        bench = fetch_benchmarks(bench_map, period="3mo")
+        if bench.empty:
+            raise ValueError("Benchmark data empty.")
 
-    st.markdown("### ✅ Quick stats")
-    st.metric("Gain/Loss %", f"{row['Gain/Loss %']:.2f}%" if pd.notna(row["Gain/Loss %"]) else "NA")
-    st.metric("Market Value (USD)", f"${row['Market Value (USD)']:,.2f}" if pd.notna(row["Market Value (USD)"]) else "NA")
-    st.metric("Total Gain (USD)", f"${row['Total Gain (USD)']:,.2f}" if pd.notna(row["Total Gain (USD)"]) else "NA")
+        bench_norm = (bench / bench.iloc[0] * 100).reset_index().melt(
+            id_vars="Date",
+            var_name="Benchmark",
+            value_name="Index (Base=100)"
+        )
 
-# -----------------------------
-# 7) BENCHMARKS
-# -----------------------------
-st.divider()
-st.subheader("📈 Benchmarks (3M indexed to 100)")
-
-bench_tickers = {"S&P 500": "^GSPC", "NIFTY 50": "^NSEI", "Gold": "GC=F"}
-
-try:
-    bench = yf.download(list(bench_tickers.values()), period="3mo", interval="1d", progress=False)["Close"]
-    if isinstance(bench, pd.Series):
-        bench = bench.to_frame()
-
-    rename_map = {v: k for k, v in bench_tickers.items()}
-    bench = bench.rename(columns=rename_map)
-
-    bench = bench.dropna(how="all").ffill()
-    bench = bench.loc[bench.notna().any(axis=1)]
-    if bench.empty:
-        raise ValueError("Benchmark data empty after cleaning.")
-
-    bench_norm = (bench / bench.iloc[0] * 100).reset_index().melt(
-        id_vars="Date",
-        var_name="Benchmark",
-        value_name="Index (Base=100)"
-    )
-
-    fig = px.line(
-        bench_norm,
-        x="Date",
-        y="Index (Base=100)",
-        color="Benchmark",
-        labels={"Index (Base=100)": "Indexed Performance", "Date": ""}
-    )
-    fig.update_layout(legend_title_text="Benchmark")
-    st.plotly_chart(fig, use_container_width=True)
-except Exception:
-    st.info("Benchmark chart temporarily unavailable.")
+        fig = px.line(bench_norm, x="Date", y="Index (Base=100)", color="Benchmark")
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception:
+        st.info("Benchmark chart temporarily unavailable.")
 
 # -----------------------------
-# 8) FOOTER
+# 7) FOOTER
 # -----------------------------
 st.divider()
 st.caption("Data source: Yahoo Finance (may be delayed). Educational project, not investment advice.")
