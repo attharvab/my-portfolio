@@ -1,6 +1,6 @@
-# ✅ WORKING VERSION: removes ALL alpha comparisons (daily alpha + inception alpha)
-# Keeps: snapshot returns, weights, Webull calendar (portfolio daily P&L), country risk, picks table
-# NOTE: Calendar is still portfolio daily returns only (no benchmark).
+# ✅ FULL UPDATED CODE (NO INCEPTION ALPHA ANYWHERE)
+# - Removed: inception alpha metric card + all related computation + functions
+# - Keeps: Total Return, Today Return, Daily Alpha (vs S&P), Webull Calendar, Country Exposure, Tabs, Picks table
 
 import streamlit as st
 import pandas as pd
@@ -81,6 +81,22 @@ def _fmt_pct(x):
         return None
     return x * 100
 
+def _bench_context(bench: str):
+    b = _clean_str(bench)
+    if b == "^NSEI":
+        return "vs Nifty 50 (India)"
+    if b == "^GSPC":
+        return "vs S&P 500 (US)"
+    if b in ["GC=F", "SI=F"]:
+        return f"vs {BENCH_LABEL.get(b, b)}"
+    return f"vs {b}" if b else "—"
+
+def _status_tag(alpha_day, bench):
+    if alpha_day is None or pd.isna(alpha_day):
+        return "—"
+    short = "Nifty" if bench == "^NSEI" else ("S&P" if bench == "^GSPC" else "Index")
+    return (f"🔥 Beating Market (vs {short})") if alpha_day >= 0 else (f"❄️ Lagging Market (vs {short})")
+
 def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
     return f"""{label} <span title=\"{safe_help}\" style=\"cursor:default;\">ⓘ</span>"""
@@ -143,8 +159,6 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
 
     df["Ticker"] = df["Ticker"].apply(_clean_str)
     df["Region"] = df["Region"].apply(_normalize_region)
-
-    # keep Benchmark column but do not use it for alpha anywhere
     df["Benchmark"] = df["Benchmark"].apply(_clean_str)
     df["Type"] = df["Type"].apply(_clean_str)
     df["Thesis"] = df["Thesis"].apply(_clean_str)
@@ -162,7 +176,6 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     df = df.dropna(subset=["Ticker", "Region", "QTY", "AvgCost"])
     df = df[df["QTY"] != 0]
 
-    # still populate Benchmark if blank (not used for alpha)
     df.loc[df["Benchmark"].str.len() == 0, "Benchmark"] = df["Region"].apply(_default_benchmark_for_region)
 
     df["TotalCost"] = df["QTY"] * df["AvgCost"]
@@ -331,7 +344,7 @@ def fetch_fx_usdinr_snapshot():
     return 83.0
 
 # ============================================================
-# 4Y daily returns: Portfolio only (INR-consistent), no alpha
+# 4Y daily returns: Portfolio ONLY (for calendar)
 # ============================================================
 @st.cache_data(ttl=1800)
 def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
@@ -369,7 +382,6 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
 
     fx = close["USDINR=X"].dropna().ffill()
 
-    # Build INR-consistent price series for each holding
     holding_prices_inr = pd.DataFrame(index=close.index)
     region_map = {row["Ticker"]: row["Region"] for _, row in holdings_df.iterrows()}
 
@@ -387,7 +399,6 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
     if holding_prices_inr.empty:
         return None
 
-    # Weights using latest available day in history (INR-consistent)
     last_day = holding_prices_inr.index.max()
     last_prices = holding_prices_inr.loc[last_day].dropna()
     qty_map = {row["Ticker"]: float(row["QTY"]) for _, row in holdings_df.iterrows()}
@@ -402,7 +413,6 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
         return None
     weights = {tk: v / denom for tk, v in values.items()}
 
-    # Daily returns (portfolio only)
     rets = holding_prices_inr.pct_change().replace([np.inf, -np.inf], np.nan)
 
     port_ret = pd.Series(0.0, index=rets.index)
@@ -425,10 +435,9 @@ def build_calendar_grid(daily_returns: pd.Series, year: int, month: int):
 
     month_start = pd.Timestamp(year=year, month=month, day=1)
     month_end = month_start + pd.offsets.MonthEnd(1)
-
     sm = s[(s.index >= month_start) & (s.index <= month_end)]
 
-    cal = _cal.Calendar(firstweekday=0)  # Monday
+    cal = _cal.Calendar(firstweekday=0)
     weeks = cal.monthdatescalendar(year, month)
 
     y_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -513,13 +522,13 @@ def render_webull_calendar(daily_returns: pd.Series):
 # Sidebar
 # ============================================================
 st.sidebar.markdown(f"## {APP_TITLE}")
-st.sidebar.markdown("**Institutional tracking of my portfolio.**")
+st.sidebar.markdown("**Institutional tracking of my portfolio and alpha.**")
 st.sidebar.markdown("---")
 
 st.sidebar.markdown("### About Me")
 st.sidebar.write(
     "I am Atharva Bhutada, an equity research-focused finance professional. "
-    "This dashboard tracks my portfolio positioning and performance."
+    "This dashboard tracks my portfolio positioning, performance, and alpha vs benchmarks."
 )
 
 st.sidebar.markdown("**Contact**")
@@ -543,7 +552,6 @@ if df_sheet.empty:
     st.warning("No valid holdings found. Check Ticker/Region/QTY/AvgCost.")
     st.stop()
 
-# Build Google Sheet fallback dict
 sheet_fallback = {}
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r.get("Ticker", ""))
@@ -553,7 +561,7 @@ for _, r in df_sheet.iterrows():
     }
 
 holdings = df_sheet["Ticker"].unique().tolist()
-benchmarks = df_sheet["Benchmark"].unique().tolist()  # still used for display only
+benchmarks = df_sheet["Benchmark"].unique().tolist()
 all_symbols = list(set(holdings + benchmarks + ["USDINR=X"] + MACRO_ASSETS))
 
 with st.spinner("Syncing portfolio data..."):
@@ -561,17 +569,23 @@ with st.spinner("Syncing portfolio data..."):
     fx_usdinr = fetch_fx_usdinr_snapshot()
 
 # ============================================================
-# Compute per-holding metrics (NO alpha)
+# Compute per-holding metrics
 # ============================================================
 rows, failures = [], []
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r["Ticker"])
+    bench = _clean_str(r["Benchmark"])
     region = r["Region"]
 
     p_tk = prices.get(tk, None)
+    p_b = prices.get(bench, None) if bench else None
 
     if not p_tk or p_tk.get("live", None) is None or p_tk.get("prev", None) is None:
         failures.append({"Ticker": tk, "Reason": "Missing holding price (Yahoo + Sheet failed)"})
+        continue
+
+    if bench and (not p_b or p_b.get("live", None) is None or p_b.get("prev", None) is None):
+        failures.append({"Ticker": tk, "Reason": f"Missing benchmark price ({bench})"})
         continue
 
     live = float(p_tk["live"])
@@ -582,13 +596,21 @@ for _, r in df_sheet.iterrows():
     total_ret = (live - avg) / avg if avg != 0 else None
     day_ret = (live - prev) / prev if prev != 0 else None
 
-    # exposure weights: INR-consistent for weighting
+    alpha_day = None
+    if bench:
+        b_live = float(p_b["live"])
+        b_prev = float(p_b["prev"])
+        b_day = (b_live - b_prev) / b_prev if b_prev != 0 else None
+        if day_ret is not None and b_day is not None:
+            alpha_day = day_ret - b_day
+
     value_inr = qty * live * (fx_usdinr if _region_key(region) == "us" else 1.0)
 
     rows.append({
         "Ticker": tk,
         "Region": region,
-        "Benchmark": _clean_str(r.get("Benchmark", "")),  # kept only for reference in table
+        "Benchmark": bench,
+        "Compared To": _bench_context(bench),
         "QTY": qty,
         "AvgCost": avg,
         "LivePrice": live,
@@ -596,6 +618,8 @@ for _, r in df_sheet.iterrows():
         "Value_INR": value_inr,
         "Total_Ret": total_ret,
         "Day_Ret": day_ret,
+        "Alpha_Day": alpha_day,
+        "Beat_Index_Tag": _status_tag(alpha_day, bench),
         "Type": r.get("Type", ""),
         "Thesis": r.get("Thesis", ""),
         "FirstBuyDate": r.get("FirstBuyDate", pd.NaT),
@@ -608,8 +632,8 @@ calc_df = pd.DataFrame(rows)
 # Header + status
 # ============================================================
 st.title("📈 Atharva Portfolio Returns")
-st.markdown("This dashboard tracks my portfolio performance.")
-st.caption("Returns shown as % changes. USD/INR is used only to compute exposure weights (INR-consistent sizing).")
+st.markdown("This dashboard tracks my portfolio performance and **daily alpha vs benchmarks**.")
+st.caption("Returns shown as % changes. USD/INR is used to compute exposure weights only.")
 
 now_utc = datetime.now(timezone.utc)
 status_text, status_type = _market_status_badge(now_utc, calc_df)
@@ -627,22 +651,31 @@ if calc_df.empty:
     st.stop()
 
 # ============================================================
-# Weights + Portfolio snapshot metrics
+# Weights
 # ============================================================
 calc_df = calc_df[calc_df["QTY"] > 0].copy()
 den = calc_df["Value_INR"].sum()
 calc_df["Weight"] = (calc_df["Value_INR"] / den) if den and den > 0 else 0.0
 
-port_day = (calc_df["Day_Ret"].fillna(0.0) * calc_df["Weight"]).sum()
-port_total = (calc_df["Total_Ret"].fillna(0.0) * calc_df["Weight"]).sum()
+port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
+port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
+
+def _safe_day(sym):
+    p = prices.get(sym, None)
+    if not p or p.get("live", None) is None or p.get("prev", None) is None or float(p["prev"]) == 0:
+        return None
+    return (float(p["live"]) - float(p["prev"])) / float(p["prev"])
+
+spx_day = _safe_day("^GSPC")
+daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
 
 # ============================================================
-# 4Y Daily returns for calendar (Portfolio only)
+# Calendar returns series (portfolio only)
 # ============================================================
 daily_ret_df_4y = build_portfolio_daily_returns_4y(df_sheet)
 
 # ============================================================
-# Top metrics row (NO alpha cards)
+# Top metrics row (NO INCEPTION ALPHA)
 # ============================================================
 m1, m2, m3 = st.columns(3)
 
@@ -655,8 +688,8 @@ with m2:
     st.metric(label="", value=f"{port_day*100:.2f}%")
 
 with m3:
-    st.markdown(_tooltip("**Positions**", "Number of holdings currently in the sheet (after cleaning)."), unsafe_allow_html=True)
-    st.metric(label="", value=f"{len(calc_df)}")
+    st.markdown(_tooltip("**Daily Alpha (vs S&P)**", "Portfolio Today Return minus S&P 500 Today Return."), unsafe_allow_html=True)
+    st.metric(label="", value="—" if daily_alpha_vs_spx is None else f"{daily_alpha_vs_spx*100:.2f}%")
 
 st.caption(_tooltip("Last Sync (UTC)", "Pricing uses Yahoo Finance with Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot."), unsafe_allow_html=True)
 st.write(now_utc.strftime("%Y-%m-%d %H:%M"))
@@ -703,17 +736,17 @@ with tabs[2]:
         st.write(f"Holdings: {len(us_df)} | Live exposure weight: {us_df['Weight'].sum()*100:.2f}%")
 
 # ============================================================
-# Picks table (NO alpha)
+# Picks table
 # ============================================================
 st.divider()
-st.subheader("📌 Picks (Holdings Snapshot)")
+st.subheader("📌 Picks (Did each stock beat its index today?)")
 
 show = calc_df.copy()
 show["Weight%"] = show["Weight"] * 100
 show["Total Ret%"] = show["Total_Ret"].apply(_fmt_pct)
 show["Day Ret%"] = show["Day_Ret"].apply(_fmt_pct)
+show["Score vs Index%"] = show["Alpha_Day"].apply(_fmt_pct)
 
-# keep benchmark label purely informational
 show["Benchmark"] = show["Benchmark"].replace({
     "^GSPC": "^GSPC (S&P 500)",
     "^NSEI": "^NSEI (Nifty 50)",
@@ -726,13 +759,17 @@ show.index = show.index + 1
 
 st.dataframe(
     show[[
-        "Ticker", "Region", "Benchmark",
-        "Weight%", "Total Ret%", "Day Ret%", "PriceSource"
+        "Ticker", "Region", "Benchmark", "Compared To",
+        "Weight%", "Total Ret%", "Day Ret%",
+        "Beat_Index_Tag", "Score vs Index%", "PriceSource"
     ]],
     column_config={
         "Weight%": st.column_config.NumberColumn("Weight", format="%.2f%%"),
         "Total Ret%": st.column_config.NumberColumn("Total Return", format="%.2f%%"),
         "Day Ret%": st.column_config.NumberColumn("Today Return", format="%.2f%%"),
+        "Beat_Index_Tag": st.column_config.TextColumn("Beat Index?"),
+        "Score vs Index%": st.column_config.NumberColumn("Score vs Index", format="%.2f%%"),
+        "Compared To": st.column_config.TextColumn("Compared To"),
         "PriceSource": st.column_config.TextColumn("Price Source"),
     },
     use_container_width=True,
@@ -740,8 +777,8 @@ st.dataframe(
 )
 
 csv_bytes = show[[
-    "Ticker", "Region", "Benchmark",
-    "Weight%", "Total Ret%", "Day Ret%", "PriceSource"
+    "Ticker", "Region", "Benchmark", "Compared To",
+    "Weight%", "Total Ret%", "Day Ret%", "Beat_Index_Tag", "Score vs Index%", "PriceSource"
 ]].reset_index(names="Row").to_csv(index=False).encode("utf-8")
 
 st.download_button(
