@@ -115,7 +115,7 @@ def _status_tag(alpha_day, bench):
 
 def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
-    return f"""{label} <span title="{safe_help}" style="cursor:default;">ⓘ</span>"""
+    return f"""{label} <span title=\"{safe_help}\" style=\"cursor:default;\">ⓘ</span>"""
 
 def _is_india_ticker(tk: str) -> bool:
     t = _clean_str(tk).upper()
@@ -230,14 +230,23 @@ def load_transactions(url: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(url)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
     df.columns = df.columns.str.strip()
 
-    col_map = {c.lower(): c for c in df.columns}
+    # Guard: duplicate column headers in Google Sheets can break column picking
+    # Keep first occurrence only
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    col_map = {str(c).lower(): c for c in df.columns}
 
     def pick(*names):
         for n in names:
-            if n.lower() in col_map:
-                return col_map[n.lower()]
+            key = str(n).lower()
+            if key in col_map:
+                return col_map[key]
         return None
 
     c_date = pick("Date", "TradeDate", "TxnDate", "TransactionDate")
@@ -250,15 +259,16 @@ def load_transactions(url: str) -> pd.DataFrame:
     if c_date is None or c_tkr is None or c_qty is None:
         raise ValueError("Transactions CSV must have at least Date, Ticker, and QTY columns.")
 
-    out = pd.DataFrame()
+    n = len(df)
+    out = pd.DataFrame(index=range(n))
     out["Date"] = pd.to_datetime(df[c_date], errors="coerce")
     out["Ticker"] = df[c_tkr].apply(_clean_str)
     out["Qty"] = df[c_qty].apply(_as_float)
-    out["Region"] = df[c_region].apply(_normalize_region) if c_region else ""
-    out["FX_Rate"] = df[c_fx].apply(_as_float) if c_fx else None
-    out["Type"] = df[c_type].apply(_clean_str) if c_type else ""
+    out["Region"] = (df[c_region].apply(_normalize_region) if c_region else pd.Series(["" for _ in range(n)]))
+    out["FX_Rate"] = (df[c_fx].apply(_as_float) if c_fx else pd.Series([None for _ in range(n)]))
+    out["Type"] = (df[c_type].apply(_clean_str) if c_type else pd.Series(["" for _ in range(n)]))
 
-    out = out.dropna(subset=["Date", "Ticker", "Qty"])
+    out = out.dropna(subset=["Date", "Ticker", "Qty"]).copy()
     out = out[out["Ticker"].str.len() > 0]
     out = out.sort_values("Date").reset_index(drop=True)
 
@@ -266,7 +276,9 @@ def load_transactions(url: str) -> pd.DataFrame:
     def infer_region(tk):
         return "India" if _is_india_ticker(tk) else "US"
 
-    out.loc[out["Region"].astype(str).str.strip() == "", "Region"] = out["Ticker"].apply(infer_region)
+    mask_missing_region = out["Region"].astype(str).str.strip().eq("")
+    if mask_missing_region.any():
+        out.loc[mask_missing_region, "Region"] = out.loc[mask_missing_region, "Ticker"].apply(infer_region)
 
     return out
 
@@ -444,11 +456,11 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
     start = pd.to_datetime(txn["Date"].min()).normalize()
     end = pd.Timestamp.utcnow().normalize()
 
-    tickers = sorted(txn["Ticker"].unique().tolist())
+    tickers = sorted(txn["Ticker"].dropna().unique().tolist())
     if not tickers:
         return None
 
-    # Pull daily closes
+    # Pull daily closes (bulk first)
     px = yf.download(
         tickers=tickers,
         start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -464,6 +476,25 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
 
     if isinstance(px, pd.Series):
         px = px.to_frame()
+
+    # If any ticker is missing from the bulk pull, try single pulls to fill gaps
+    got = set([str(c) for c in px.columns])
+    missing = [t for t in tickers if t not in got]
+    for tk in missing:
+        try:
+            one = yf.download(
+                tickers=tk,
+                start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
+                end=(end + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+                threads=False
+            )
+            if one is not None and (not one.empty) and "Close" in one.columns:
+                px = px.join(one["Close"].rename(tk), how="outer")
+        except Exception:
+            continue
 
     if px.empty:
         return None
@@ -493,7 +524,7 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
     d["Day"] = pd.to_datetime(d["Date"]).dt.normalize()
     daily_deltas = d.groupby(["Day", "Ticker"], as_index=False)["Qty"].sum()
 
-    for tk in px.columns:
+    for tk in pos.columns:
         s = daily_deltas[daily_deltas["Ticker"] == tk].set_index("Day")["Qty"]
         s = s.reindex(days).fillna(0.0)
         pos[tk] = s.cumsum()
@@ -506,12 +537,14 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
     if fx_close is not None and not fx_close.empty:
         fx_aligned = fx_close.reindex(days).ffill()
         for tk in px_inr.columns:
-            if _is_us_ticker(tk) and tk not in ["GC=F", "SI=F"]:  # keep commodities as-is (already global quotes)
+            if _is_us_ticker(tk) and tk not in ["GC=F", "SI=F"]:
                 px_inr[tk] = px_inr[tk] * fx_aligned
 
     # Daily portfolio value in INR units (never displayed), then index
     v = (pos * px_inr).sum(axis=1)
     v = v.replace([float("inf"), float("-inf")], pd.NA).dropna()
+
+    # Start the curve only once the portfolio actually has positions
     v = v[v > 0]
     if v.empty:
         return None
@@ -898,6 +931,7 @@ daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
 
 # ============================================================
 # Inception Index (Portfolio vs S&P) from Transactions Ledger
+# - We report trailing 4Y alpha (INR-consistent) to avoid "data ghost" spikes
 # ============================================================
 txn_df = pd.DataFrame()
 portfolio_idx = None
@@ -918,9 +952,20 @@ if TRANSACTIONS_URL and str(TRANSACTIONS_URL).strip():
                 if spx_idx is not None and (not spx_idx.empty):
                     m = pd.concat([portfolio_idx, spx_idx], axis=1).dropna()
                     if not m.empty:
-                        strat_total = (float(m.iloc[-1, 0]) / float(m.iloc[0, 0])) - 1.0
-                        spx_total = (float(m.iloc[-1, 1]) / float(m.iloc[0, 1])) - 1.0
+                        end_dt = pd.to_datetime(m.index.max()).tz_localize(None)
+                        cutoff = (end_dt - pd.DateOffset(years=4)).tz_localize(None) if getattr(end_dt, "tzinfo", None) else (end_dt - pd.DateOffset(years=4))
+                        m4 = m[m.index >= cutoff]
+                        if len(m4) < 2:
+                            m4 = m
+
+                        strat_total = (float(m4.iloc[-1, 0]) / float(m4.iloc[0, 0])) - 1.0
+                        spx_total = (float(m4.iloc[-1, 1]) / float(m4.iloc[0, 1])) - 1.0
                         inception_alpha_vs_spx = strat_total - spx_total
+
+                        # For plotting, show the same trailing 4Y window
+                        if len(m4) >= 2:
+                            portfolio_idx = m4.iloc[:, 0].copy()
+                            spx_idx = m4.iloc[:, 1].copy()
         else:
             ledger_warning = "Transactions ledger is empty or not published correctly."
     except Exception as e:
