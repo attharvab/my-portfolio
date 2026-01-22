@@ -7,31 +7,25 @@ from zoneinfo import ZoneInfo
 import plotly.express as px
 import plotly.graph_objects as go
 import time as _time
-
 # ============================================================
 # Atharva Portfolio Returns (Privacy-first, resilient)
 # - NO ₹ value shown anywhere, only Base=100 index + weights
 # - Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot
 # - Inception equity curve uses Transactions ledger + daily prices
-#   and converts US holdings to INR using USDINR=X daily series
+# and converts US holdings to INR using USDINR=X daily series
 # ============================================================
-
 APP_TITLE = "Atharva Portfolio Returns"
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="📈")
-
 # ========= YOUR SHEET URLS =========
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUHmE__8dpl_nKGv5F5mTXO7e3EyVRqz-PJF_4yyIrfJAa7z8XgzkIw6IdLnaotkACka2Q-PvP8P-z/pub?output=csv"
 TRANSACTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR-OybDEJRMpK5jvtLnMq3SOze-ZwT6hVY07w4nAnKfn1dva_E68fKSZQkn0yvzDhk217HEQ7xis77G/pub?output=csv"
-
 # =============================
 # Columns & config
 # =============================
 REQUIRED_COLS = ["Ticker", "Region", "QTY", "AvgCost"]
 OPTIONAL_COLS = ["Benchmark", "Type", "Thesis", "FirstBuyDate", "LivePrice_GS", "PrevClose_GS"]
-
 SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
 DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}
-
 MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
 ASSET_LABELS = {
     "^GSPC": "^GSPC (S&P 500)",
@@ -40,7 +34,6 @@ ASSET_LABELS = {
     "SI=F": "SI=F (Silver)",
 }
 BENCH_LABEL = {"^GSPC": "S&P 500", "^NSEI": "Nifty 50", "GC=F": "Gold", "SI=F": "Silver"}
-
 # ============================================================
 # Helpers
 # ============================================================
@@ -48,7 +41,6 @@ def _clean_str(x):
     if pd.isna(x):
         return ""
     return str(x).strip()
-
 def _as_float(x):
     try:
         if pd.isna(x):
@@ -59,7 +51,6 @@ def _as_float(x):
         return float(s)
     except Exception:
         return None
-
 def _normalize_region(r):
     r = _clean_str(r).upper()
     if r in ["US", "USA", "UNITED STATES", "UNITEDSTATES"]:
@@ -67,7 +58,6 @@ def _normalize_region(r):
     if r in ["INDIA", "IN", "IND"]:
         return "India"
     return r
-
 def _region_key(region: str) -> str:
     r = _clean_str(region).lower()
     if r == "us":
@@ -75,10 +65,8 @@ def _region_key(region: str) -> str:
     if r == "india":
         return "india"
     return r
-
 def _default_benchmark_for_region(region: str) -> str:
     return DEFAULT_BENCH.get(_region_key(region), "")
-
 def _parse_date(x):
     try:
         if pd.isna(x) or str(x).strip() == "":
@@ -86,12 +74,10 @@ def _parse_date(x):
         return pd.to_datetime(str(x).strip(), errors="coerce")
     except Exception:
         return pd.NaT
-
 def _fmt_pct(x):
     if x is None or pd.isna(x):
         return None
     return x * 100
-
 def _bench_context(bench: str):
     b = _clean_str(bench)
     if b == "^NSEI":
@@ -101,27 +87,22 @@ def _bench_context(bench: str):
     if b in ["GC=F", "SI=F"]:
         return f"vs {BENCH_LABEL.get(b, b)}"
     return f"vs {b}" if b else "—"
-
 def _status_tag(alpha_day, bench):
     if alpha_day is None or pd.isna(alpha_day):
         return "—"
     short = "Nifty" if bench == "^NSEI" else ("S&P" if bench == "^GSPC" else "Index")
     return (f"🔥 Beating Market (vs {short})") if alpha_day >= 0 else (f"❄️ Lagging Market (vs {short})")
-
 def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
     return f"""{label} <span title=\"{safe_help}\" style=\"cursor:default;\">ⓘ</span>"""
-
 def _is_india_ticker(tk: str) -> bool:
     t = _clean_str(tk).upper()
     return t.endswith(".NS") or t.endswith(".BO") or t in ["^NSEI"]
-
 def _is_us_ticker(tk: str) -> bool:
     t = _clean_str(tk).upper()
     if t in ["^GSPC"]:
         return True
     return (not _is_india_ticker(t))
-
 # ============================================================
 # Market session logic (India + US)
 # ============================================================
@@ -132,28 +113,22 @@ def _is_market_open(now_utc: datetime, market: str) -> bool:
         if now.weekday() >= 5:
             return False
         return dtime(9, 30) <= now.time() <= dtime(16, 0)
-
     if market == "India":
         tz = ZoneInfo("Asia/Kolkata")
         now = now_utc.astimezone(tz)
         if now.weekday() >= 5:
             return False
         return dtime(9, 15) <= now.time() <= dtime(15, 30)
-
     return False
-
 def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
     us_open = _is_market_open(now_utc, "US")
     in_open = _is_market_open(now_utc, "India")
-
     if calc_df is None or calc_df.empty or "Day_Ret" not in calc_df.columns:
         if not us_open and not in_open:
             return "🟡 Markets are currently closed. Showing data from the last available trading session.", "closed"
         return "🟡 Pricing is temporarily unavailable. Showing partial content while data refreshes.", "mixed"
-
     near_zero = calc_df["Day_Ret"].dropna().abs() < 1e-6
     pct_zero = float(near_zero.mean()) if len(near_zero) else 0.0
-
     if (not us_open and not in_open) or pct_zero > 0.8:
         return "🟡 Markets are currently closed or prices are not updating. Showing data from the last trading session.", "closed"
     if in_open and not us_open:
@@ -161,7 +136,6 @@ def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
     if us_open and not in_open:
         return "🟦 US market is open. India market is closed (India picks reflect last India session).", "mixed"
     return "🟩 Markets are open.", "open"
-
 # ============================================================
 # Load + clean (Holdings)
 # ============================================================
@@ -169,36 +143,27 @@ def _market_status_badge(now_utc: datetime, calc_df: pd.DataFrame):
 def load_and_clean_data(url: str) -> pd.DataFrame:
     df = pd.read_csv(url)
     df.columns = df.columns.str.strip()
-
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in Google Sheet: {missing}. Required: {REQUIRED_COLS}")
-
     for c in OPTIONAL_COLS:
         if c not in df.columns:
             df[c] = ""
-
     df["Ticker"] = df["Ticker"].apply(_clean_str)
     df["Region"] = df["Region"].apply(_normalize_region)
     df["Benchmark"] = df["Benchmark"].apply(_clean_str)
     df["Type"] = df["Type"].apply(_clean_str)
     df["Thesis"] = df["Thesis"].apply(_clean_str)
-
     df["FirstBuyDate"] = df["FirstBuyDate"].apply(_parse_date)
     df["LivePrice_GS"] = df["LivePrice_GS"].apply(_as_float)
     df["PrevClose_GS"] = df["PrevClose_GS"].apply(_as_float)
-
     df = df[df["Ticker"].str.len() > 0]
     df = df[~df["Ticker"].str.contains(SUMMARY_NOISE_REGEX, case=False, na=False)]
-
     df["QTY"] = df["QTY"].apply(_as_float)
     df["AvgCost"] = df["AvgCost"].apply(_as_float)
-
     df = df.dropna(subset=["Ticker", "Region", "QTY", "AvgCost"])
     df = df[df["QTY"] != 0]
-
     df.loc[df["Benchmark"].str.len() == 0, "Benchmark"] = df["Region"].apply(_default_benchmark_for_region)
-
     df["TotalCost"] = df["QTY"] * df["AvgCost"]
     agg = df.groupby(["Ticker", "Region", "Benchmark"], as_index=False).agg(
         QTY=("QTY", "sum"),
@@ -213,7 +178,6 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     agg = agg.dropna(subset=["Ticker", "QTY", "AvgCost"])
     agg = agg[agg["QTY"] != 0]
     return agg.reset_index(drop=True)
-
 # ============================================================
 # Load transactions ledger (for equity curve)
 # Expected columns in your sheet:
@@ -223,57 +187,49 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
 def load_transactions(url: str) -> pd.DataFrame:
     if not url or str(url).strip() == "":
         return pd.DataFrame()
-
     df = pd.read_csv(url)
     if df is None or df.empty:
         return pd.DataFrame()
-
     df.columns = df.columns.astype(str).str.strip()
-    df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")].copy()
+    # Drop Google Sheets export junk columns safely (no boolean alignment issues)
+    keep_cols = [c for c in df.columns if not c.startswith('Unnamed')]
+    df = df[keep_cols].copy()
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
-
     # Exact required columns for YOUR CSV
     required_txn_cols = ["Ticker", "Date", "QTY"]
     for col in required_txn_cols:
         if col not in df.columns:
-            raise ValueError(f"Transactions CSV missing required column: {col}")
-
+            raise ValueValue(f"Transactions CSV missing required column: {col}")
     # Optional columns
     c_region = "Region" if "Region" in df.columns else None
     c_fx = "FX_Rate" if "FX_Rate" in df.columns else None
     c_type = "Type" if "Type" in df.columns else None
-
-    out = pd.DataFrame()
+    n = len(df)
+    out = pd.DataFrame(index=range(n))
     # Parse dates like 01-Aug-2019 reliably
-    out["Date"] = pd.to_datetime(df["Date"].astype(str).str.strip(), errors="coerce", format="%d-%b-%Y")
+    date_parsed = pd.to_datetime(df["Date"].astype(str).str.strip(), errors="coerce", format="%d-%b-%Y")
+    out["Date"] = date_parsed.values
     # If format parsing fails (Google sometimes changes), fall back:
-    if out["Date"].isna().all():
-        out["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-
-    out["Ticker"] = df["Ticker"].apply(_clean_str)
-    out["Qty"] = df["QTY"].apply(_as_float)
-
-    out["Region"] = df[c_region].apply(_normalize_region) if c_region else ""
-    out["FX_Rate"] = df[c_fx].apply(_as_float) if c_fx else None
-    out["Type"] = df[c_type].apply(_clean_str) if c_type else ""
-
+    if date_parsed.isna().all():
+        out["Date"] = pd.to_datetime(df["Date"], errors="coerce").values
+    out["Ticker"] = df["Ticker"].apply(_clean_str).values
+    out["Qty"] = df["QTY"].apply(_as_float).values
+    out["Region"] = df[c_region].apply(_normalize_region).values if c_region else ""
+    out["FX_Rate"] = df[c_fx].apply(_as_float).values if c_fx else None
+    out["Type"] = df[c_type].apply(_clean_str).values if c_type else ""
     out = out.dropna(subset=["Date", "Ticker", "Qty"]).copy()
     out = out[out["Ticker"].str.len() > 0]
     out = out.sort_values("Date").reset_index(drop=True)
-
     # If Region is missing, infer from ticker
     def infer_region(tk):
         return "India" if _is_india_ticker(tk) else "US"
-
     missing_region_mask = out["Region"].astype(str).str.strip().eq("")
     if missing_region_mask.any():
         out.loc[missing_region_mask, "Region"] = out.loc[missing_region_mask, "Ticker"].apply(infer_region)
-
     return out
-
 # ============================================================
-# Pricing Engine (Yahoo primary + Sheet fallback ALWAYS for snapshot)
+# Pricing Engine
 # ============================================================
 def _fast_live_prev(ticker: str):
     live, prev = None, None
@@ -294,13 +250,11 @@ def _fast_live_prev(ticker: str):
     except Exception:
         prev = None
     return live, prev
-
 @st.cache_data(ttl=300)
 def fetch_history_closes_chunked(tickers, period="15d", interval="1d", chunk_size=25, retries=2):
     tickers = sorted(list(set([_clean_str(t) for t in tickers if _clean_str(t)])))
     if not tickers:
         return pd.DataFrame()
-
     frames = []
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
@@ -321,16 +275,13 @@ def fetch_history_closes_chunked(tickers, period="15d", interval="1d", chunk_siz
             except Exception:
                 _time.sleep(0.7 * (attempt + 1))
                 continue
-
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, axis=1)
-
 @st.cache_data(ttl=300)
 def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
     hist = fetch_history_closes_chunked(tickers)
     price_map = {}
-
     def _hist_last_prev(df, tk):
         last_close, prev_close = None, None
         try:
@@ -351,21 +302,17 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
         except Exception:
             return None, None
         return last_close, prev_close
-
     for tk in tickers:
         tk = _clean_str(tk)
         source = "none"
-
         live_fast, prev_fast = _fast_live_prev(tk)
         if live_fast is not None or prev_fast is not None:
             source = "yfinance_fastinfo"
-
         last_close, prev_close = _hist_last_prev(hist, tk)
         live = live_fast if live_fast is not None else last_close
         prev = prev_fast if prev_fast is not None else prev_close
         if source == "none" and (live is not None or prev is not None):
             source = "yfinance_bulk"
-
         if live is None or prev is None:
             try:
                 df1 = yf.download(
@@ -386,7 +333,6 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
                         source = "yfinance_single"
             except Exception:
                 pass
-
         if (live is None) or (prev is None):
             fb = sheet_fallback.get(tk, {})
             fb_live = fb.get("live", None)
@@ -397,14 +343,10 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
             if prev is None and fb_prev is not None:
                 prev = float(fb_prev)
                 source = "google_sheet"
-
         if prev is None and live is not None:
             prev = live
-
         price_map[tk] = {"live": live, "prev": prev, "source": source}
-
     return price_map
-
 @st.cache_data(ttl=900)
 def fetch_fx_usdinr_snapshot():
     live, _ = _fast_live_prev("USDINR=X")
@@ -419,30 +361,24 @@ def fetch_fx_usdinr_snapshot():
     except Exception:
         pass
     return 83.0
-
 @st.cache_data(ttl=900)
 def fetch_5y_macro():
     t = yf.download(MACRO_ASSETS, period="5y", interval="1mo", progress=False, auto_adjust=False, threads=False)["Close"]
     if isinstance(t, pd.Series):
         t = t.to_frame()
     return t.dropna(how="all").ffill()
-
 # ============================================================
 # Equity Curve (Index only, Base=100)
-# - Values US holdings in INR using daily USDINR=X
 # ============================================================
 @st.cache_data(ttl=1800)
 def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
     if txn is None or txn.empty:
         return None
-
     start = pd.to_datetime(txn["Date"].min()).normalize()
     end = pd.Timestamp.utcnow().normalize()
-
     tickers = sorted(txn["Ticker"].dropna().unique().tolist())
     if not tickers:
         return None
-
     px = yf.download(
         tickers=tickers,
         start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -452,13 +388,10 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
         auto_adjust=False,
         threads=False
     )["Close"]
-
     if px is None:
         return None
-
     if isinstance(px, pd.Series):
         px = px.to_frame(name=tickers[0])
-
     # Fill missing tickers with single pulls if needed
     got = set(map(str, px.columns))
     missing = [t for t in tickers if t not in got]
@@ -477,12 +410,9 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
                 px = px.join(one["Close"].rename(tk), how="outer")
         except Exception:
             continue
-
     if px.empty:
         return None
-
     px = px.dropna(how="all").ffill()
-
     fx = yf.download(
         "USDINR=X",
         start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -495,46 +425,36 @@ def build_equity_curve_index_from_ledger(txn: pd.DataFrame):
     fx_close = None
     if fx is not None and (not fx.empty) and "Close" in fx.columns:
         fx_close = fx["Close"].dropna().ffill()
-
     days = px.index
     pos = pd.DataFrame(0.0, index=days, columns=px.columns)
-
     d = txn.copy()
     d["Day"] = pd.to_datetime(d["Date"]).dt.normalize()
     daily_deltas = d.groupby(["Day", "Ticker"], as_index=False)["Qty"].sum()
-
     for tk in pos.columns:
         s = daily_deltas.loc[daily_deltas["Ticker"] == tk, ["Day", "Qty"]].set_index("Day")["Qty"]
         s = s.reindex(days).fillna(0.0)
         pos[tk] = s.cumsum()
-
     pos = pos.clip(lower=0.0)
-
     px_inr = px.copy()
     if fx_close is not None and not fx_close.empty:
         fx_aligned = fx_close.reindex(days).ffill()
         for tk in px_inr.columns:
             if _is_us_ticker(tk) and tk not in ["GC=F", "SI=F"]:
                 px_inr[tk] = px_inr[tk] * fx_aligned
-
     v = (pos * px_inr).sum(axis=1)
     v = v.replace([float("inf"), float("-inf")], pd.NA).dropna()
     v = v[v > 0]
     if v.empty:
         return None
-
     idx = (v / float(v.iloc[0])) * 100.0
     idx.name = "My Portfolio (Indexed)"
     return idx
-
 @st.cache_data(ttl=1800)
 def build_spx_benchmark_in_inr(start_date: pd.Timestamp):
     if start_date is None or pd.isna(start_date):
         return None
-
     start_date = pd.to_datetime(start_date).tz_localize(None)
     end = pd.Timestamp.utcnow().normalize()
-
     spx = yf.download(
         "^GSPC",
         start=(start_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -546,7 +466,6 @@ def build_spx_benchmark_in_inr(start_date: pd.Timestamp):
     )
     if spx is None or spx.empty or "Close" not in spx.columns:
         return None
-
     fx = yf.download(
         "USDINR=X",
         start=(start_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
@@ -556,26 +475,21 @@ def build_spx_benchmark_in_inr(start_date: pd.Timestamp):
         auto_adjust=False,
         threads=False
     )
-
     s = spx["Close"].dropna()
     if s.empty:
         return None
-
     if fx is None or fx.empty or "Close" not in fx.columns:
         idx = (s / float(s.iloc[0])) * 100.0
         idx.name = "S&P 500 (Indexed)"
         return idx
-
     f = fx["Close"].dropna()
     m = pd.concat([s, f], axis=1).dropna()
     if m.empty:
         return None
-
     spx_inr = m.iloc[:, 0] * m.iloc[:, 1]
     idx = (spx_inr / float(spx_inr.iloc[0])) * 100.0
     idx.name = "S&P 500 (Indexed)"
     return idx
-
 # ============================================================
 # Calendar Heatmap (last 5 years)
 # ============================================================
@@ -583,10 +497,8 @@ def build_spx_benchmark_in_inr(start_date: pd.Timestamp):
 def build_daily_alpha_heatmap_series_5y(tickers, weights, region_map):
     if not tickers:
         return pd.DataFrame()
-
     end = pd.Timestamp.utcnow().normalize()
     start = end - pd.Timedelta(days=365 * 5)
-
     syms = list(set(tickers + ["^GSPC", "USDINR=X"]))
     px = yf.download(
         tickers=syms,
@@ -597,17 +509,14 @@ def build_daily_alpha_heatmap_series_5y(tickers, weights, region_map):
         auto_adjust=False,
         threads=False
     )["Close"]
-
     if px is None:
         return pd.DataFrame()
     if isinstance(px, pd.Series):
         px = px.to_frame()
     if px.empty:
         return pd.DataFrame()
-
     px = px.dropna(how="all").ffill()
     fx = px["USDINR=X"].dropna().ffill() if "USDINR=X" in px.columns else None
-
     rets = pd.DataFrame(index=px.index)
     for tk in tickers:
         if tk not in px.columns:
@@ -618,24 +527,19 @@ def build_daily_alpha_heatmap_series_5y(tickers, weights, region_map):
         if region_map.get(tk, "") == "US" and fx is not None and not fx.empty:
             s = (s * fx.reindex(s.index).ffill())
         rets[tk] = s.pct_change()
-
     if "^GSPC" not in px.columns:
         return pd.DataFrame()
-
     spx = px["^GSPC"].dropna().ffill()
     if fx is not None and not fx.empty:
         spx = spx * fx.reindex(spx.index).ffill()
     spx_ret = spx.pct_change()
-
     rets = rets.join(spx_ret.rename("^GSPC_INR"), how="inner").dropna(how="all")
     if rets.empty or "^GSPC_INR" not in rets.columns:
         return pd.DataFrame()
-
     port = pd.Series(0.0, index=rets.index)
     for tk, w in weights.items():
         if tk in rets.columns:
             port = port.add(rets[tk].fillna(0.0) * float(w), fill_value=0.0)
-
     out = pd.DataFrame({
         "Date": rets.index,
         "PortfolioRet": port.values,
@@ -643,22 +547,18 @@ def build_daily_alpha_heatmap_series_5y(tickers, weights, region_map):
     })
     out["Alpha"] = out["PortfolioRet"] - out["SPXRet"]
     return out.reset_index(drop=True)
-
 def render_calendar_heatmap(alpha_df: pd.DataFrame):
     if alpha_df is None or alpha_df.empty:
         st.info("Heatmap unavailable right now (not enough daily data).")
         return
-
     df = alpha_df.copy()
     df["Date"] = pd.to_datetime(df["Date"])
     df["Dow"] = df["Date"].dt.dayofweek
     df["DowName"] = df["Date"].dt.day_name().str[:3]
     df["WeekStart"] = df["Date"] - pd.to_timedelta(df["Dow"], unit="D")
     df["WeekLabel"] = df["WeekStart"].dt.strftime("%b %d")
-
     pivot = df.pivot_table(index="DowName", columns="WeekLabel", values="Alpha", aggfunc="mean")
     pivot = pivot.reindex(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
-
     fig = go.Figure(data=go.Heatmap(
         z=pivot.values,
         x=pivot.columns,
@@ -674,20 +574,17 @@ def render_calendar_heatmap(alpha_df: pd.DataFrame):
         height=330
     )
     st.plotly_chart(fig, use_container_width=True)
-
 # ============================================================
 # Sidebar
 # ============================================================
 st.sidebar.markdown(f"## {APP_TITLE}")
 st.sidebar.markdown("**Institutional tracking of my portfolio and alpha.**")
 st.sidebar.markdown("---")
-
 st.sidebar.markdown("### About Me")
 st.sidebar.write(
     "I am Atharva Bhutada, an equity research-focused finance professional. "
     "This dashboard tracks my portfolio positioning, performance, and alpha vs benchmarks."
 )
-
 st.sidebar.markdown("**Contact**")
 st.sidebar.markdown("LinkedIn:")
 st.sidebar.markdown("[linkedin.com/in/atharva-bhutada](https://linkedin.com/in/atharva-bhutada)")
@@ -695,7 +592,6 @@ st.sidebar.markdown("Email:")
 st.sidebar.markdown("[abhutada1@babson.edu](mailto:abhutada1@babson.edu)")
 st.sidebar.markdown("Substack:")
 st.sidebar.markdown("[atharvabhutada1.substack.com](https://atharvabhutada1.substack.com/)")
-
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Follow Updates")
 with st.sidebar.form("follow_form", clear_on_submit=True):
@@ -706,7 +602,6 @@ with st.sidebar.form("follow_form", clear_on_submit=True):
             st.success("Saved. (Connect this to Zapier/Make/SMTP to send notifications.)")
         else:
             st.warning("Enter a valid email.")
-
 # ============================================================
 # Load holdings
 # ============================================================
@@ -715,25 +610,20 @@ try:
 except Exception as e:
     st.error(f"Spreadsheet Error: {e}")
     st.stop()
-
 if df_sheet.empty:
     st.warning("No valid holdings found. Check Ticker/Region/QTY/AvgCost.")
     st.stop()
-
 sheet_fallback = {}
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r.get("Ticker", ""))
     sheet_fallback[tk] = {"live": r.get("LivePrice_GS", None), "prev": r.get("PrevClose_GS", None)}
-
 holdings = df_sheet["Ticker"].unique().tolist()
 benchmarks = df_sheet["Benchmark"].unique().tolist()
 all_symbols = list(set(holdings + benchmarks + ["USDINR=X"] + MACRO_ASSETS))
-
 with st.spinner("Syncing portfolio data..."):
     prices = build_prices_with_sheet_fallback(all_symbols, sheet_fallback)
     fx_usdinr = fetch_fx_usdinr_snapshot()
     macro = fetch_5y_macro()
-
 # ============================================================
 # Compute per-holding metrics
 # ============================================================
@@ -742,25 +632,20 @@ for _, r in df_sheet.iterrows():
     tk = _clean_str(r["Ticker"])
     bench = _clean_str(r["Benchmark"])
     region = r["Region"]
-
     p_tk = prices.get(tk, None)
     p_b = prices.get(bench, None) if bench else None
-
     if not p_tk or p_tk.get("live", None) is None or p_tk.get("prev", None) is None:
         failures.append({"Ticker": tk, "Reason": "Missing holding price (Yahoo + Sheet failed)"})
         continue
     if bench and (not p_b or p_b.get("live", None) is None or p_b.get("prev", None) is None):
         failures.append({"Ticker": tk, "Reason": f"Missing benchmark price ({bench})"})
         continue
-
     live = float(p_tk["live"])
     prev = float(p_tk["prev"])
     qty = float(r["QTY"])
     avg = float(r["AvgCost"])
-
     total_ret = (live - avg) / avg if avg != 0 else None
     day_ret = (live - prev) / prev if prev != 0 else None
-
     alpha_day = None
     if bench:
         b_live = float(p_b["live"])
@@ -768,9 +653,7 @@ for _, r in df_sheet.iterrows():
         b_day = (b_live - b_prev) / b_prev if b_prev != 0 else None
         if day_ret is not None and b_day is not None:
             alpha_day = day_ret - b_day
-
     value_inr = qty * live * (fx_usdinr if _region_key(region) == "us" else 1.0)
-
     rows.append({
         "Ticker": tk,
         "Region": region,
@@ -790,16 +673,13 @@ for _, r in df_sheet.iterrows():
         "FirstBuyDate": r.get("FirstBuyDate", pd.NaT),
         "PriceSource": p_tk.get("source", "unknown"),
     })
-
 calc_df = pd.DataFrame(rows)
-
 # ============================================================
 # Header + status
 # ============================================================
 st.title("📈 Atharva Portfolio Returns")
 st.markdown("This dashboard tracks my portfolio performance and **alpha vs the S&P 500**, with India positions benchmarked to Nifty at the stock level.")
 st.caption("Returns are shown in native currency. FX (USD/INR) is used only for exposure weights, not for returns.")
-
 now_utc = datetime.now(timezone.utc)
 status_text, status_type = _market_status_badge(now_utc, calc_df)
 if status_type == "closed":
@@ -808,32 +688,26 @@ elif status_type == "mixed":
     st.warning(status_text)
 else:
     st.success(status_text)
-
 if calc_df.empty:
     st.error("Pricing is temporarily unavailable. Your page is still live, please refresh shortly.")
     if failures:
         st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
     st.stop()
-
 # ============================================================
 # Weights
 # ============================================================
 calc_df = calc_df[calc_df["QTY"] > 0].copy()
 den = calc_df["Value_INR"].sum()
 calc_df["Weight"] = (calc_df["Value_INR"] / den) if den and den > 0 else 0.0
-
 port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
 port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
-
 def _safe_day(sym):
     p = prices.get(sym, None)
     if not p or p.get("live", None) is None or p.get("prev", None) is None or float(p["prev"]) == 0:
         return None
     return (float(p["live"]) - float(p["prev"])) / float(p["prev"])
-
 spx_day = _safe_day("^GSPC")
 daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
-
 # ============================================================
 # Inception Index (Portfolio vs S&P) from Transactions Ledger
 # ============================================================
@@ -842,11 +716,9 @@ portfolio_idx = None
 spx_idx = None
 inception_alpha_vs_spx = None
 ledger_warning = None
-
 if TRANSACTIONS_URL and str(TRANSACTIONS_URL).strip():
     try:
         txn_df = load_transactions(TRANSACTIONS_URL)
-
         with st.sidebar.expander("Transactions Debug", expanded=False):
             st.write("Rows:", 0 if txn_df is None else len(txn_df))
             if txn_df is not None and not txn_df.empty:
@@ -854,13 +726,11 @@ if TRANSACTIONS_URL and str(TRANSACTIONS_URL).strip():
                 st.write("Unique tickers:", txn_df["Ticker"].nunique())
                 st.write("Columns:", list(txn_df.columns))
                 st.dataframe(txn_df.head(10), use_container_width=True)
-
         if txn_df is not None and (not txn_df.empty):
             portfolio_idx = build_equity_curve_index_from_ledger(txn_df)
             if portfolio_idx is not None and (not portfolio_idx.empty):
                 start_dt = pd.to_datetime(portfolio_idx.index.min()).tz_localize(None)
                 spx_idx = build_spx_benchmark_in_inr(start_dt)
-
                 if spx_idx is not None and (not spx_idx.empty):
                     m = pd.concat([portfolio_idx, spx_idx], axis=1).dropna()
                     if not m.empty:
@@ -869,54 +739,42 @@ if TRANSACTIONS_URL and str(TRANSACTIONS_URL).strip():
                         m4 = m[m.index >= cutoff]
                         if len(m4) < 2:
                             m4 = m
-
                         strat_total = (float(m4.iloc[-1, 0]) / float(m4.iloc[0, 0])) - 1.0
                         spx_total = (float(m4.iloc[-1, 1]) / float(m4.iloc[0, 1])) - 1.0
                         inception_alpha_vs_spx = strat_total - spx_total
-
                         portfolio_idx = m4.iloc[:, 0].copy()
                         spx_idx = m4.iloc[:, 1].copy()
         else:
             ledger_warning = "Transactions ledger is empty or not published correctly."
     except Exception as e:
         ledger_warning = f"Transactions ledger issue: {e}"
-
 # ============================================================
 # Top metrics row
 # ============================================================
 if ledger_warning:
     st.warning(ledger_warning)
-
 m1, m2, m3, m4 = st.columns(4)
-
 with m1:
     st.markdown(_tooltip("**Total Return (Strategy)**", "Absolute return vs AvgCost, weighted by current exposure."), unsafe_allow_html=True)
     st.metric(label="", value=f"{port_total*100:.2f}%")
-
 with m2:
     st.markdown(_tooltip("**Today Return (Portfolio)**", "Weighted return today (PrevClose vs LivePrice)."), unsafe_allow_html=True)
     st.metric(label="", value=f"{port_day*100:.2f}%")
-
 with m3:
     st.markdown(_tooltip("**Daily Alpha (vs S&P)**", "Portfolio Today Return minus S&P 500 Today Return."), unsafe_allow_html=True)
     st.metric(label="", value="—" if daily_alpha_vs_spx is None else f"{daily_alpha_vs_spx*100:.2f}%")
-
 with m4:
     st.markdown(_tooltip("**Inception Alpha (vs S&P)**", "Trailing 4Y alpha computed from the ledger-built Base=100 curve. US holdings valued as USD×USDINR so the curve is INR-consistent. Benchmark is S&P×USDINR (then Base=100)."), unsafe_allow_html=True)
     st.metric(label="", value="—" if inception_alpha_vs_spx is None else f"{inception_alpha_vs_spx*100:.2f}%")
-
 st.caption(_tooltip("Last Sync (UTC)", "Pricing uses Yahoo Finance with a Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot."), unsafe_allow_html=True)
 st.write(now_utc.strftime("%Y-%m-%d %H:%M"))
-
 # ============================================================
 # Tabs
 # ============================================================
 st.divider()
 tabs = st.tabs(["Combined", "India", "US"])
-
 def _filter_region(df, region_name):
     return df[df["Region"].str.upper() == region_name.upper()].copy()
-
 def _ensure_series(x, name=None):
     if x is None:
         return None
@@ -932,34 +790,26 @@ def _ensure_series(x, name=None):
         s.name = name or (s.name if s.name else "Series")
         return s
     return None
-
 def _plot_indexed_strategy(macro_df, portfolio_series=None, spx_series=None, title="Strategy vs Benchmarks (Indexed to 100 at Start)"):
     if macro_df is None or macro_df.empty:
         st.info("Macro trend data unavailable right now.")
         return
-
     macro_named = macro_df.copy().rename(columns={k: v for k, v in ASSET_LABELS.items() if k in macro_df.columns})
     plot_df = macro_named.copy()
-
     p = _ensure_series(portfolio_series, "My Portfolio (Indexed)")
     s = _ensure_series(spx_series, "S&P 500 (Indexed)")
-
     if p is not None and not p.empty:
         p_m = p.resample("M").last()
         plot_df = plot_df.merge(p_m.to_frame(), left_index=True, right_index=True, how="left")
-
     if s is not None and not s.empty:
         s_m = s.resample("M").last()
         plot_df = plot_df.merge(s_m.to_frame(), left_index=True, right_index=True, how="left")
-
     plot_df = plot_df.dropna(how="all").ffill()
     if plot_df.empty:
         st.info("Not enough data to plot right now.")
         return
-
     base = plot_df.iloc[0]
     plot_idx = (plot_df / base) * 100.0
-
     fig = go.Figure()
     for col in plot_idx.columns:
         width = 4 if "My Portfolio" in col else 2
@@ -973,10 +823,8 @@ def _plot_indexed_strategy(macro_df, portfolio_series=None, spx_series=None, tit
         height=380
     )
     st.plotly_chart(fig, use_container_width=True)
-
 with tabs[0]:
     left, right = st.columns([2, 1])
-
     with left:
         st.subheader("📈 Strategy vs Benchmarks (Return Index, Base=100)")
         if portfolio_idx is None or (isinstance(portfolio_idx, pd.Series) and portfolio_idx.empty):
@@ -987,13 +835,11 @@ with tabs[0]:
             spx_series=spx_idx,
             title="Strategy vs Macro Benchmarks (Indexed)"
         )
-
     with right:
         st.subheader("🌍 Country Risk (Live Exposure)")
         alloc = calc_df.groupby("Region", as_index=False)["Weight"].sum()
         fig_pie = px.pie(alloc, values="Weight", names="Region", hole=0.5)
         st.plotly_chart(fig_pie, use_container_width=True)
-
     st.divider()
     st.subheader("🟩🟥 Calendar Heatmap (last 5 years)")
     st.caption("Daily alpha squares show how my portfolio performed **vs S&P 500 each day** over the last 5 years (INR-consistent).")
@@ -1005,7 +851,6 @@ with tabs[0]:
         region_map=region_map
     )
     render_calendar_heatmap(alpha_daily)
-
 with tabs[1]:
     st.subheader("🇮🇳 India View")
     india_df = _filter_region(calc_df, "INDIA")
@@ -1013,7 +858,6 @@ with tabs[1]:
         st.info("No India holdings right now.")
     else:
         st.write(f"Holdings: {len(india_df)} | Live exposure weight: {india_df['Weight'].sum()*100:.2f}%")
-
 with tabs[2]:
     st.subheader("🇺🇸 US View")
     us_df = _filter_region(calc_df, "US")
@@ -1021,29 +865,24 @@ with tabs[2]:
         st.info("No US holdings right now.")
     else:
         st.write(f"Holdings: {len(us_df)} | Live exposure weight: {us_df['Weight'].sum()*100:.2f}%")
-
 # ============================================================
 # Picks table + Export
 # ============================================================
 st.divider()
 st.subheader("📌 Picks (Did each stock beat its index today?)")
-
 show = calc_df.copy()
 show["Weight%"] = show["Weight"] * 100
 show["Total Ret%"] = show["Total_Ret"].apply(_fmt_pct)
 show["Day Ret%"] = show["Day_Ret"].apply(_fmt_pct)
 show["Score vs Index%"] = show["Alpha_Day"].apply(_fmt_pct)
-
 show["Benchmark"] = show["Benchmark"].replace({
     "^GSPC": "^GSPC (S&P 500)",
     "^NSEI": "^NSEI (Nifty 50)",
     "GC=F": "GC=F (Gold)",
     "SI=F": "SI=F (Silver)"
 })
-
 show = show.reset_index(drop=True)
 show.index = show.index + 1
-
 st.dataframe(
     show[[
         "Ticker", "Region", "Benchmark", "Compared To",
@@ -1062,12 +901,10 @@ st.dataframe(
     use_container_width=True,
     hide_index=False
 )
-
 csv_bytes = show[[
     "Ticker", "Region", "Benchmark", "Compared To",
     "Weight%", "Total Ret%", "Day Ret%", "Beat_Index_Tag", "Score vs Index%", "PriceSource"
 ]].reset_index(names="Row").to_csv(index=False).encode("utf-8")
-
 st.download_button(
     label="⬇️ Download Picks as CSV",
     data=csv_bytes,
@@ -1075,7 +912,6 @@ st.download_button(
     mime="text/csv",
     key="download_picks_csv_main"
 )
-
 # ============================================================
 # Failures (diagnostic)
 # ============================================================
@@ -1083,6 +919,5 @@ if failures:
     st.divider()
     st.warning("Some symbols could not be priced (dashboard still runs on partial data).")
     st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
-
 st.divider()
 st.caption("Data source: Yahoo Finance (with Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot). Educational project, not investment advice.")
