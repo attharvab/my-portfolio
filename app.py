@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -5,8 +6,18 @@ from datetime import datetime, timezone, time as dtime
 from zoneinfo import ZoneInfo
 import plotly.express as px
 import plotly.graph_objects as go
-import numpy as np
-import calendar as _cal
+import time as _time
+
+# ============================================================
+# Atharva Portfolio Returns (Privacy-first, resilient)
+# - NO ₹ value shown anywhere, only Base=100 index + weights
+# - Google Sheet LivePrice_GS/PrevClose_GS always acts as fallback for snapshot
+# - Removes Transactions-ledger equity curve (you asked to drop it for now)
+# - Adds:
+#   1) Webull-style P&L Calendar (monthly grid, day+P&L%, red/green, 0-centered)
+#   2) Realistic 4Y Blended Alpha:
+#        India sleeve vs Nifty (INR) + US sleeve vs S&P (USD), blended by exposure
+# ============================================================
 
 APP_TITLE = "Atharva Portfolio Returns"
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="📈")
@@ -21,7 +32,7 @@ REQUIRED_COLS = ["Ticker", "Region", "QTY", "AvgCost"]
 OPTIONAL_COLS = ["Benchmark", "Type", "Thesis", "FirstBuyDate", "LivePrice_GS", "PrevClose_GS"]
 
 SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
-DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}
+DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}  # per region if Benchmark blank
 
 MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
 ASSET_LABELS = {
@@ -30,7 +41,6 @@ ASSET_LABELS = {
     "GC=F": "GC=F (Gold)",
     "SI=F": "SI=F (Silver)",
 }
-BENCH_LABEL = {"^GSPC": "S&P 500", "^NSEI": "Nifty 50", "GC=F": "Gold", "SI=F": "Silver"}
 
 # ============================================================
 # Helpers
@@ -90,7 +100,7 @@ def _bench_context(bench: str):
     if b == "^GSPC":
         return "vs S&P 500 (US)"
     if b in ["GC=F", "SI=F"]:
-        return f"vs {BENCH_LABEL.get(b, b)}"
+        return f"vs {b}"
     return f"vs {b}" if b else "—"
 
 def _status_tag(alpha_day, bench):
@@ -101,7 +111,7 @@ def _status_tag(alpha_day, bench):
 
 def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
-    return f"""{label} <span title=\"{safe_help}\" style=\"cursor:default;\">ⓘ</span>"""
+    return f"""{label} <span title="{safe_help}" style="cursor:default;">ⓘ</span>"""
 
 def _is_india_ticker(tk: str) -> bool:
     t = _clean_str(tk).upper()
@@ -111,10 +121,10 @@ def _is_us_ticker(tk: str) -> bool:
     t = _clean_str(tk).upper()
     if t in ["^GSPC"]:
         return True
-    return (not _is_india_ticker(t))
+    return (not _is_india_ticker(t))  # simple rule for this project
 
 # ============================================================
-# Market session logic
+# Market session logic (India + US)
 # ============================================================
 def _is_market_open(now_utc: datetime, market: str) -> bool:
     if market == "US":
@@ -206,7 +216,7 @@ def load_and_clean_data(url: str) -> pd.DataFrame:
     return agg.reset_index(drop=True)
 
 # ============================================================
-# Pricing Engine (Yahoo primary + Sheet fallback for snapshot)
+# Pricing Engine (Yahoo primary + Sheet fallback ALWAYS for snapshot)
 # ============================================================
 def _fast_live_prev(ticker: str):
     live, prev = None, None
@@ -246,13 +256,12 @@ def fetch_history_closes_chunked(tickers, period="15d", interval="1d", chunk_siz
                     progress=False,
                     auto_adjust=False,
                     threads=False,
-                    group_by="column"
+                    group_by="column",
                 )
                 if df is not None and not df.empty:
                     frames.append(df)
                 break
             except Exception:
-                import time as _time
                 _time.sleep(0.7 * (attempt + 1))
                 continue
 
@@ -300,6 +309,7 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
         if source == "none" and (live is not None or prev is not None):
             source = "yfinance_bulk"
 
+        # Per-ticker fallback (single download)
         if live is None or prev is None:
             try:
                 df1 = yf.download(
@@ -321,6 +331,7 @@ def build_prices_with_sheet_fallback(tickers, sheet_fallback: dict):
             except Exception:
                 pass
 
+        # Sheet fallback ALWAYS (snapshot)
         if (live is None) or (prev is None):
             fb = sheet_fallback.get(tk, {})
             fb_live = fb.get("live", None)
@@ -346,235 +357,295 @@ def fetch_fx_usdinr_snapshot():
         return float(live)
     try:
         fx = yf.download("USDINR=X", period="15d", interval="1d", progress=False, auto_adjust=False, threads=False)
-        if fx is not None and not fx.empty and "Close" in fx.columns:
-            s = fx["Close"].dropna()
-            if not s.empty:
-                v = float(s.iloc[-1])
-                return v if v > 0 else 83.0
+        s = fx["Close"].dropna()
+        if not s.empty:
+            v = float(s.iloc[-1])
+            return v if v > 0 else 83.0
     except Exception:
         pass
     return 83.0
 
+@st.cache_data(ttl=900)
+def fetch_5y_macro():
+    t = yf.download(MACRO_ASSETS, period="5y", interval="1mo", progress=False, auto_adjust=False, threads=False)
+    if t is None or t.empty:
+        return pd.DataFrame()
+    t = t["Close"] if "Close" in t.columns else t
+    if isinstance(t, pd.Series):
+        t = t.to_frame()
+    return t.dropna(how="all").ffill()
+
 # ============================================================
-# 4Y daily returns: Portfolio vs S&P (INR-consistent), no ledger
+# 4Y Blended Alpha (realistic)
 # ============================================================
 @st.cache_data(ttl=1800)
-def build_portfolio_and_spx_daily_returns_4y(holdings_df: pd.DataFrame):
-    if holdings_df is None or holdings_df.empty:
-        return None
-
-    tickers = holdings_df["Ticker"].dropna().unique().tolist()
-    if not tickers:
-        return None
-
-    end = pd.Timestamp.utcnow().normalize()
-    start = end - pd.DateOffset(years=4)
-
-    # weights based on current exposure using INR conversion snapshot (only for weights)
-    fx_snapshot = fetch_fx_usdinr_snapshot()
-
-    tmp = holdings_df.copy()
-    tmp["LivePrice"] = np.nan  # placeholder, not used here
-    # Use AvgCost as a proxy base for weight if needed, but we can compute weights later from current snapshot outside.
-    # Here we take weights from current QTY * last price (from history last).
-    need = list(set(tickers + ["^GSPC", "USDINR=X"]))
-    px = yf.download(
-        tickers=need,
-        start=(start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
-        end=(end + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+def _download_close_daily(symbols, start, end):
+    if not symbols:
+        return pd.DataFrame()
+    df = yf.download(
+        tickers=sorted(list(set(symbols))),
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
         interval="1d",
         progress=False,
         auto_adjust=False,
-        threads=False
+        threads=False,
     )
-
-    if px is None or px.empty or "Close" not in px.columns:
-        return None
-
-    close = px["Close"].copy()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    close = df["Close"] if isinstance(df, pd.DataFrame) and "Close" in df.columns else df
     if isinstance(close, pd.Series):
-        # happens if only one symbol, but we always have multiple, still guard
         close = close.to_frame()
+    return close.dropna(how="all").ffill()
 
-    close = close.dropna(how="all").ffill()
-    if close.empty:
+def _total_return_from_close(close: pd.Series):
+    s = close.dropna()
+    if len(s) < 2:
+        return None
+    return float(s.iloc[-1] / s.iloc[0] - 1.0)
+
+def _weighted_total_return_from_close(close_df: pd.DataFrame, weights: dict):
+    cols = [c for c in close_df.columns if c in weights]
+    if not cols:
+        return None
+    px = close_df[cols].dropna(how="all").ffill()
+    if px.empty or len(px) < 2:
+        return None
+    rets = px.pct_change().fillna(0.0)
+    w = pd.Series({k: float(v) for k, v in weights.items() if k in cols})
+    if w.sum() == 0:
+        return None
+    w = (w / w.sum()).reindex(cols).fillna(0.0)
+    port_daily = (rets * w).sum(axis=1)
+    port_index = (1.0 + port_daily).cumprod()
+    return float(port_index.iloc[-1] / port_index.iloc[0] - 1.0)
+
+@st.cache_data(ttl=1800)
+def compute_blended_alpha_4y(calc_df: pd.DataFrame):
+    if calc_df is None or calc_df.empty:
         return None
 
-    if "USDINR=X" not in close.columns or "^GSPC" not in close.columns:
+    end = pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)
+    start = (pd.Timestamp.utcnow().normalize() - pd.DateOffset(years=4) - pd.Timedelta(days=10))
+
+    india = calc_df[calc_df["Region"].astype(str).str.upper().eq("INDIA")].copy()
+    us = calc_df[calc_df["Region"].astype(str).str.upper().eq("US")].copy()
+
+    india_exposure = float(india["Value_INR"].sum()) if not india.empty else 0.0
+    us_exposure = float(us["Value_INR"].sum()) if not us.empty else 0.0
+    total_exposure = india_exposure + us_exposure
+    if total_exposure <= 0:
         return None
 
-    fx = close["USDINR=X"].dropna().ffill()
-    spx = close["^GSPC"].dropna().ffill()
+    w_india_blend = india_exposure / total_exposure
+    w_us_blend = us_exposure / total_exposure
 
-    # Build INR-consistent price series for each holding
-    holding_prices_inr = pd.DataFrame(index=close.index)
-    region_map = {row["Ticker"]: row["Region"] for _, row in holdings_df.iterrows()}
+    out = {
+        "alpha_blended": None,
+        "alpha_india": None,
+        "alpha_us": None,
+        "w_india": w_india_blend,
+        "w_us": w_us_blend,
+    }
 
-    for tk in tickers:
-        if tk not in close.columns:
-            continue
-        s = close[tk].dropna().ffill()
-        if s.empty:
-            continue
-        if region_map.get(tk, "") == "US":
-            s = s * fx.reindex(s.index).ffill()
-        holding_prices_inr[tk] = s
+    # India sleeve vs Nifty (INR)
+    if not india.empty:
+        india_tk = sorted(list(set(india["Ticker"].dropna().tolist())))
+        px_india = _download_close_daily(india_tk + ["^NSEI"], start, end)
+        if "^NSEI" in px_india.columns:
+            w_india = {row["Ticker"]: float(row["Weight"]) for _, row in india.iterrows()}
+            india_port = _weighted_total_return_from_close(px_india, w_india)
+            india_bench = _total_return_from_close(px_india["^NSEI"])
+            if india_port is not None and india_bench is not None:
+                out["alpha_india"] = india_port - india_bench
 
-    holding_prices_inr = holding_prices_inr.dropna(how="all").ffill()
-    if holding_prices_inr.empty:
-        return None
+    # US sleeve vs S&P (USD)
+    if not us.empty:
+        us_tk = sorted(list(set(us["Ticker"].dropna().tolist())))
+        px_us = _download_close_daily(us_tk + ["^GSPC"], start, end)
+        if "^GSPC" in px_us.columns:
+            us = us.copy()
+            us["Value_USD"] = us["QTY"].astype(float) * us["LivePrice"].astype(float)
+            denom = float(us["Value_USD"].sum())
+            w_us = {}
+            if denom > 0:
+                for _, r in us.iterrows():
+                    w_us[r["Ticker"]] = float(r["Value_USD"] / denom)
+            us_port = _weighted_total_return_from_close(px_us, w_us)
+            us_bench = _total_return_from_close(px_us["^GSPC"])
+            if us_port is not None and us_bench is not None:
+                out["alpha_us"] = us_port - us_bench
 
-    # Compute weights using latest available day in history, INR-consistent
-    last_day = holding_prices_inr.index.max()
-    last_prices = holding_prices_inr.loc[last_day].dropna()
-    qty_map = {row["Ticker"]: float(row["QTY"]) for _, row in holdings_df.iterrows()}
+    parts, weights = [], []
+    if out["alpha_india"] is not None and w_india_blend > 0:
+        parts.append(out["alpha_india"]); weights.append(w_india_blend)
+    if out["alpha_us"] is not None and w_us_blend > 0:
+        parts.append(out["alpha_us"]); weights.append(w_us_blend)
 
-    values = {}
-    for tk, p in last_prices.items():
-        q = qty_map.get(tk, 0.0)
-        values[tk] = q * float(p)
+    if not parts:
+        return out
 
-    denom = sum(values.values())
-    if denom <= 0:
-        return None
-    weights = {tk: v / denom for tk, v in values.items()}
-
-    # Daily returns
-    rets = holding_prices_inr.pct_change().replace([np.inf, -np.inf], np.nan)
-
-    port_ret = pd.Series(0.0, index=rets.index)
-    for tk, w in weights.items():
-        if tk in rets.columns:
-            port_ret = port_ret.add(rets[tk].fillna(0.0) * float(w), fill_value=0.0)
-
-    # Benchmark in INR terms: (S&P * FX)
-    spx_inr = spx * fx.reindex(spx.index).ffill()
-    spx_ret = spx_inr.pct_change().replace([np.inf, -np.inf], np.nan)
-
-    out = pd.DataFrame({"PortfolioRet": port_ret, "SPXRet": spx_ret}).dropna(how="any")
-    if out.empty:
-        return None
+    wsum = sum(weights)
+    out["alpha_blended"] = sum(p * (w / wsum) for p, w in zip(parts, weights))
     return out
 
-def compute_inception_alpha_4y(daily_df: pd.DataFrame):
-    if daily_df is None or daily_df.empty:
-        return None
-
-    port = daily_df["PortfolioRet"].astype(float)
-    spx = daily_df["SPXRet"].astype(float)
-
-    port_total = (1.0 + port).prod() - 1.0
-    spx_total = (1.0 + spx).prod() - 1.0
-    return float(port_total - spx_total)
-
 # ============================================================
-# Webull-style P&L Calendar
+# Webull-style P&L Calendar (monthly grid)
+# - Uses a fixed-weight daily return series (privacy-safe)
+# - Converts US tickers to INR using USDINR=X each day so one series exists
 # ============================================================
-def build_calendar_grid(daily_returns: pd.Series, year: int, month: int):
-    """
-    daily_returns: Series indexed by date (datetime-like), values are daily % returns as decimals (0.01 = 1%)
-    Returns:
-      z: 7 x W matrix of returns (floats, NaN where empty)
-      text: 7 x W matrix for annotations
-      x_labels: week labels
-      y_labels: Mon..Sun
-    """
-    # Filter to month
-    idx = pd.to_datetime(daily_returns.index).tz_localize(None)
-    s = pd.Series(daily_returns.values, index=idx).sort_index()
+@st.cache_data(ttl=1800)
+def build_portfolio_daily_returns_series_5y(calc_df: pd.DataFrame):
+    if calc_df is None or calc_df.empty:
+        return pd.DataFrame()
 
-    month_start = pd.Timestamp(year=year, month=month, day=1)
-    month_end = month_start + pd.offsets.MonthEnd(1)
+    end = pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)
+    start = pd.Timestamp.utcnow().normalize() - pd.Timedelta(days=365 * 5 + 15)
 
-    sm = s[(s.index >= month_start) & (s.index <= month_end)]
+    tickers = sorted(list(set(calc_df["Ticker"].dropna().tolist())))
+    if not tickers:
+        return pd.DataFrame()
 
-    # Calendar weeks start Monday
-    cal = _cal.Calendar(firstweekday=0)  # Monday
-    weeks = cal.monthdatescalendar(year, month)  # list of weeks, each week is 7 dates
+    need = tickers + ["USDINR=X"]
+    px = _download_close_daily(need, start, end)
+    if px is None or px.empty:
+        return pd.DataFrame()
+    px = px.dropna(how="all").ffill()
 
-    y_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    w = len(weeks)
-    z = np.full((7, w), np.nan, dtype=float)
-    text = np.full((7, w), "", dtype=object)
+    fx = px["USDINR=X"].dropna().ffill() if "USDINR=X" in px.columns else None
 
-    for wi, week in enumerate(weeks):
-        for di, day in enumerate(week):
-            # Only show days inside target month
-            if day.month != month:
-                continue
-            dts = pd.Timestamp(day)
-            ret = sm.get(dts, np.nan)
-            z[di, wi] = ret if pd.notna(ret) else np.nan
+    # Build INR-consistent price panel
+    px_inr = px.copy()
+    if fx is not None and not fx.empty:
+        fx_a = fx.reindex(px_inr.index).ffill()
+        for tk in tickers:
+            if tk in px_inr.columns and _is_us_ticker(tk) and tk not in ["GC=F", "SI=F"]:
+                px_inr[tk] = px_inr[tk] * fx_a
 
-            # Text: day-of-month + P&L in center
-            if pd.isna(ret):
-                text[di, wi] = f"{day.day}"
-            else:
-                text[di, wi] = f"{day.day}<br>{ret*100:.2f}%"
+    # Fixed weights based on current exposure (already computed)
+    w = {row["Ticker"]: float(row["Weight"]) for _, row in calc_df.iterrows()}
+    cols = [c for c in tickers if c in px_inr.columns and c in w]
+    if not cols:
+        return pd.DataFrame()
 
-    x_labels = [f"W{(i+1)}" for i in range(w)]
-    return z, text, x_labels, y_labels
+    px_use = px_inr[cols].dropna(how="all").ffill()
+    rets = px_use.pct_change().fillna(0.0)
+    ws = pd.Series({k: float(v) for k, v in w.items() if k in cols})
+    if ws.sum() == 0:
+        return pd.DataFrame()
+    ws = (ws / ws.sum()).reindex(cols).fillna(0.0)
 
-def render_webull_calendar(daily_returns: pd.Series):
-    if daily_returns is None or daily_returns.empty:
-        st.info("Calendar unavailable (not enough daily return data).")
+    port_ret = (rets * ws).sum(axis=1)
+    out = pd.DataFrame({"Date": port_ret.index, "PortRet": port_ret.values})
+    out = out.dropna()
+    return out.reset_index(drop=True)
+
+def render_webull_calendar(port_daily: pd.DataFrame):
+    if port_daily is None or port_daily.empty:
+        st.info("Calendar unavailable (not enough daily data).")
         return
 
-    idx = pd.to_datetime(daily_returns.index).tz_localize(None)
-    min_dt, max_dt = idx.min(), idx.max()
+    df = port_daily.copy()
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["Year"] = df["Date"].dt.year
+    df["Month"] = df["Date"].dt.month
 
-    # Dropdown month/year within available range
-    years = list(range(min_dt.year, max_dt.year + 1))
-    sel_year = st.selectbox("Year", years, index=len(years) - 1)
+    months = df[["Year", "Month"]].drop_duplicates().sort_values(["Year", "Month"])
+    if months.empty:
+        st.info("Calendar unavailable.")
+        return
 
-    # months available in selected year
-    months = list(range(1, 13))
-    if sel_year == min_dt.year:
-        months = [m for m in months if m >= min_dt.month]
-    if sel_year == max_dt.year:
-        months = [m for m in months if m <= max_dt.month]
+    # Default to latest month
+    latest = months.iloc[-1]
+    year_options = sorted(months["Year"].unique().tolist())
+    y = st.selectbox("Year", year_options, index=year_options.index(int(latest["Year"])), key="webull_year")
 
-    month_names = {m: _cal.month_name[m] for m in months}
-    sel_month_name = st.selectbox("Month", [month_names[m] for m in months], index=len(months) - 1)
-    sel_month = [m for m in months if month_names[m] == sel_month_name][0]
-
-    z, text, x_labels, y_labels = build_calendar_grid(daily_returns, sel_year, sel_month)
-
-    # Symmetric color scale around 0 so white == 0
-    # Use max abs to set zmin/zmax
-    finite = np.isfinite(z)
-    max_abs = float(np.nanmax(np.abs(z[finite]))) if finite.any() else 0.01
-    max_abs = max(max_abs, 0.01)
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=z,
-            x=x_labels,
-            y=y_labels,
-            text=text,
-            texttemplate="%{text}",
-            textfont={"size": 12},
-            colorscale=[
-                [0.0, "#d62728"],   # red
-                [0.5, "#ffffff"],   # white at 0
-                [1.0, "#2ca02c"],   # green
-            ],
-            zmin=-max_abs,
-            zmax=max_abs,
-            hovertemplate="%{text}<extra></extra>",
-            showscale=True,
-            colorbar=dict(title="Daily P&L %", tickformat=".1%")
-        )
+    month_options = months[months["Year"] == y]["Month"].tolist()
+    month_labels = {m: pd.Timestamp(2000, m, 1).strftime("%B") for m in range(1, 13)}
+    m_default = int(latest["Month"]) if int(latest["Year"]) == int(y) else month_options[-1]
+    m = st.selectbox(
+        "Month",
+        month_options,
+        index=month_options.index(m_default),
+        format_func=lambda mm: month_labels.get(mm, str(mm)),
+        key="webull_month"
     )
 
-    # Make squares equal: constrain axes
+    sub = df[(df["Year"] == y) & (df["Month"] == m)].copy()
+    if sub.empty:
+        st.info("No daily data for this month.")
+        return
+
+    # Webull-like monthly grid:
+    # rows: Mon..Sun (0..6), cols: week-of-month (integer)
+    sub["Day"] = sub["Date"].dt.day
+    sub["Dow"] = sub["Date"].dt.dayofweek  # Mon=0
+    first = pd.Timestamp(int(y), int(m), 1)
+    first_dow = first.dayofweek
+    sub["WeekOfMonth"] = ((sub["Day"] + first_dow - 1) // 7) + 1
+
+    # Make full grid to keep square layout stable
+    max_week = int(sub["WeekOfMonth"].max())
+    grid = pd.MultiIndex.from_product([range(0, 7), range(1, max_week + 1)], names=["Dow", "WeekOfMonth"]).to_frame(index=False)
+    sub2 = grid.merge(sub[["Dow", "WeekOfMonth", "Day", "PortRet"]], on=["Dow", "WeekOfMonth"], how="left")
+
+    # Heat values (0-centered)
+    z = sub2.pivot(index="Dow", columns="WeekOfMonth", values="PortRet").reindex(range(0, 7))
+    z = z.fillna(0.0)
+
+    # Text: day + P&L%
+    def _cell_text(d, r):
+        if pd.isna(d):
+            return ""
+        if pd.isna(r):
+            return f"{int(d)}"
+        return f"{int(d)}<br>{r*100:+.2f}%"
+
+    text = sub2.pivot(index="Dow", columns="WeekOfMonth", values="Day").reindex(range(0, 7))
+    retp = sub2.pivot(index="Dow", columns="WeekOfMonth", values="PortRet").reindex(range(0, 7))
+
+    text_out = []
+    for i in range(text.shape[0]):
+        row = []
+        for j in range(text.shape[1]):
+            d = text.iloc[i, j]
+            r = retp.iloc[i, j]
+            if pd.isna(d):
+                row.append("")
+            else:
+                row.append(_cell_text(d, r))
+        text_out.append(row)
+
+    # Symmetric range around 0
+    vmax = float(pd.Series(sub["PortRet"]).abs().quantile(0.98)) if len(sub) else 0.02
+    vmax = max(vmax, 0.01)
+    vmin = -vmax
+
+    y_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    x_labels = [f"W{k}" for k in range(1, max_week + 1)]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z.values,
+        x=x_labels,
+        y=y_labels,
+        zmin=vmin,
+        zmax=vmax,
+        colorscale="RdYlGn",  # red negative, green positive
+        showscale=True,
+        colorbar=dict(title="Daily P&L %", tickformat=".0%"),
+        text=text_out,
+        texttemplate="%{text}",
+        hovertemplate="Week: %{x}<br>Day: %{y}<br>P&L: %{z:.2%}<extra></extra>",
+    ))
+
     fig.update_layout(
-        title=f"Webull-Style P&L Calendar ({_cal.month_name[sel_month]} {sel_year})",
+        title=f"Webull-Style P&L Calendar ({pd.Timestamp(int(y), int(m), 1).strftime('%B %Y')})",
         margin=dict(l=10, r=10, t=50, b=10),
         height=520,
     )
-    fig.update_yaxes(autorange="reversed")  # Mon at top
-    fig.update_xaxes(side="top")
+
+    # Force square-ish cells (visual 1:1 feel)
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -599,6 +670,17 @@ st.sidebar.markdown("[abhutada1@babson.edu](mailto:abhutada1@babson.edu)")
 st.sidebar.markdown("Substack:")
 st.sidebar.markdown("[atharvabhutada1.substack.com](https://atharvabhutada1.substack.com/)")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Follow Updates")
+with st.sidebar.form("follow_form", clear_on_submit=True):
+    email = st.text_input("Enter your email to follow updates", placeholder="name@email.com")
+    submitted = st.form_submit_button("Follow")
+    if submitted:
+        if email and "@" in email:
+            st.success("Saved. (Connect this to Zapier/Make/SMTP to send notifications.)")
+        else:
+            st.warning("Enter a valid email.")
+
 # ============================================================
 # Load holdings sheet
 # ============================================================
@@ -612,7 +694,7 @@ if df_sheet.empty:
     st.warning("No valid holdings found. Check Ticker/Region/QTY/AvgCost.")
     st.stop()
 
-# Build Google Sheet fallback dict
+# Build Google Sheet fallback dict (per ticker)
 sheet_fallback = {}
 for _, r in df_sheet.iterrows():
     tk = _clean_str(r.get("Ticker", ""))
@@ -628,9 +710,10 @@ all_symbols = list(set(holdings + benchmarks + ["USDINR=X"] + MACRO_ASSETS))
 with st.spinner("Syncing portfolio data..."):
     prices = build_prices_with_sheet_fallback(all_symbols, sheet_fallback)
     fx_usdinr = fetch_fx_usdinr_snapshot()
+    macro = fetch_5y_macro()
 
 # ============================================================
-# Compute per-holding metrics
+# Compute per-holding metrics (NO absolute portfolio value displayed)
 # ============================================================
 rows, failures = [], []
 for _, r in df_sheet.iterrows():
@@ -665,7 +748,7 @@ for _, r in df_sheet.iterrows():
         if day_ret is not None and b_day is not None:
             alpha_day = day_ret - b_day
 
-    # exposure weights: INR-consistent for weighting
+    # exposure weights only (internal); NO display of value
     value_inr = qty * live * (fx_usdinr if _region_key(region) == "us" else 1.0)
 
     rows.append({
@@ -677,7 +760,7 @@ for _, r in df_sheet.iterrows():
         "AvgCost": avg,
         "LivePrice": live,
         "PrevClose": prev,
-        "Value_INR": value_inr,
+        "Value_INR": value_inr,  # internal only
         "Total_Ret": total_ret,
         "Day_Ret": day_ret,
         "Alpha_Day": alpha_day,
@@ -694,8 +777,10 @@ calc_df = pd.DataFrame(rows)
 # Header + status
 # ============================================================
 st.title("📈 Atharva Portfolio Returns")
-st.markdown("This dashboard tracks my portfolio performance and **alpha vs the S&P 500**.")
-st.caption("Returns shown as % changes. USD/INR is used to compute exposure weights and INR-consistent benchmark comparisons.")
+st.markdown(
+    "This dashboard tracks my portfolio performance and **alpha vs the S&P 500**, with India positions benchmarked to Nifty at the stock level."
+)
+st.caption("Returns are shown in native currency. FX (USD/INR) is used only for exposure weights, not displayed.")
 
 now_utc = datetime.now(timezone.utc)
 status_text, status_type = _market_status_badge(now_utc, calc_df)
@@ -707,7 +792,7 @@ else:
     st.success(status_text)
 
 if calc_df.empty:
-    st.error("Pricing is temporarily unavailable. Please refresh shortly.")
+    st.error("Pricing is temporarily unavailable. Your page is still live, please refresh shortly.")
     if failures:
         st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
     st.stop()
@@ -716,12 +801,12 @@ if calc_df.empty:
 # Weights
 # ============================================================
 calc_df = calc_df[calc_df["QTY"] > 0].copy()
-den = calc_df["Value_INR"].sum()
-calc_df["Weight"] = (calc_df["Value_INR"] / den) if den and den > 0 else 0.0
+den = float(calc_df["Value_INR"].sum())
+calc_df["Weight"] = (calc_df["Value_INR"] / den) if den > 0 else 0.0
 
-# Snapshot portfolio metrics
-port_day = (calc_df["Day_Ret"] * calc_df["Weight"]).sum()
-port_total = (calc_df["Total_Ret"] * calc_df["Weight"]).sum()
+# Snapshot metrics
+port_day = float((calc_df["Day_Ret"] * calc_df["Weight"]).sum())
+port_total = float((calc_df["Total_Ret"] * calc_df["Weight"]).sum())
 
 def _safe_day(sym):
     p = prices.get(sym, None)
@@ -732,14 +817,15 @@ def _safe_day(sym):
 spx_day = _safe_day("^GSPC")
 daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
 
-# ============================================================
-# Inception Alpha (4Y) from daily returns (no ledger, no graph)
-# ============================================================
-inception_alpha_vs_spx = None
-daily_ret_df_4y = build_portfolio_and_spx_daily_returns_4y(df_sheet)
-
-if daily_ret_df_4y is not None and not daily_ret_df_4y.empty:
-    inception_alpha_vs_spx = compute_inception_alpha_4y(daily_ret_df_4y)
+# 4Y blended alpha (realistic)
+alpha_detail = None
+alpha_4y_blended = None
+try:
+    alpha_detail = compute_blended_alpha_4y(calc_df)
+    if alpha_detail and alpha_detail.get("alpha_blended", None) is not None:
+        alpha_4y_blended = float(alpha_detail["alpha_blended"])
+except Exception:
+    alpha_4y_blended = None
 
 # ============================================================
 # Top metrics row
@@ -747,11 +833,11 @@ if daily_ret_df_4y is not None and not daily_ret_df_4y.empty:
 m1, m2, m3, m4 = st.columns(4)
 
 with m1:
-    st.markdown(_tooltip("**Total Return (Strategy)**", "Weighted return vs AvgCost using current exposure weights."), unsafe_allow_html=True)
+    st.markdown(_tooltip("**Total Return (Strategy)**", "Absolute return vs AvgCost, weighted by current exposure."), unsafe_allow_html=True)
     st.metric(label="", value=f"{port_total*100:.2f}%")
 
 with m2:
-    st.markdown(_tooltip("**Today Return (Portfolio)**", "Weighted daily return using PrevClose vs LivePrice."), unsafe_allow_html=True)
+    st.markdown(_tooltip("**Today Return (Portfolio)**", "Weighted return today (PrevClose vs LivePrice)."), unsafe_allow_html=True)
     st.metric(label="", value=f"{port_day*100:.2f}%")
 
 with m3:
@@ -759,10 +845,16 @@ with m3:
     st.metric(label="", value="—" if daily_alpha_vs_spx is None else f"{daily_alpha_vs_spx*100:.2f}%")
 
 with m4:
-    st.markdown(_tooltip("**Inception Alpha (vs S&P)**", "Last 4 years: daily portfolio returns (INR-consistent) minus daily S&P returns (S&P×USDINR). Uses current holdings and weights, no transactions ledger."), unsafe_allow_html=True)
-    st.metric(label="", value="—" if inception_alpha_vs_spx is None else f"{inception_alpha_vs_spx*100:.2f}%")
+    st.markdown(_tooltip(
+        "**4Y Alpha (India vs Nifty + US vs S&P)**",
+        "Fair alpha: India sleeve is compared to Nifty in INR, US sleeve is compared to S&P in USD. Sleeve alphas are blended using current exposure weights."
+    ), unsafe_allow_html=True)
+    st.metric(label="", value="—" if alpha_4y_blended is None else f"{alpha_4y_blended*100:.2f}%")
 
-st.caption(_tooltip("Last Sync (UTC)", "Pricing uses Yahoo Finance with Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot."), unsafe_allow_html=True)
+if alpha_detail:
+    st.caption(f"Blend weights: India {alpha_detail.get('w_india',0)*100:.1f}%, US {alpha_detail.get('w_us',0)*100:.1f}%")
+
+st.caption(_tooltip("Last Sync (UTC)", "Pricing uses Yahoo Finance with a Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot."), unsafe_allow_html=True)
 st.write(now_utc.strftime("%Y-%m-%d %H:%M"))
 
 # ============================================================
@@ -772,17 +864,16 @@ st.divider()
 tabs = st.tabs(["Combined", "India", "US"])
 
 def _filter_region(df, region_name):
-    return df[df["Region"].str.upper() == region_name.upper()].copy()
+    return df[df["Region"].astype(str).str.upper() == region_name.upper()].copy()
 
 with tabs[0]:
     left, right = st.columns([2, 1])
 
     with left:
-        st.subheader("🟩🟥 Webull Calendar (Portfolio Daily P&L %)")
-        if daily_ret_df_4y is None or daily_ret_df_4y.empty:
-            st.info("Calendar unavailable (could not build daily portfolio returns).")
-        else:
-            render_webull_calendar(daily_ret_df_4y["PortfolioRet"])
+        st.subheader("🗓️ Webull-Style P&L Calendar")
+        st.caption("Monthly P&L calendar uses a **fixed-weight daily return series** (privacy-safe). Red is negative, green is positive, white is ~0%.")
+        daily = build_portfolio_daily_returns_series_5y(calc_df)
+        render_webull_calendar(daily)
 
     with right:
         st.subheader("🌍 Country Risk (Live Exposure)")
@@ -807,7 +898,7 @@ with tabs[2]:
         st.write(f"Holdings: {len(us_df)} | Live exposure weight: {us_df['Weight'].sum()*100:.2f}%")
 
 # ============================================================
-# Picks table
+# Picks table + Export (privacy)
 # ============================================================
 st.divider()
 st.subheader("📌 Picks (Did each stock beat its index today?)")
@@ -861,7 +952,7 @@ st.download_button(
 )
 
 # ============================================================
-# Failures (diagnostic)
+# Failures
 # ============================================================
 if failures:
     st.divider()
@@ -869,4 +960,4 @@ if failures:
     st.dataframe(pd.DataFrame(failures), use_container_width=True, hide_index=True)
 
 st.divider()
-st.caption("Data source: Yahoo Finance (with Google Sheet fallback for snapshot). Educational project, not investment advice.")
+st.caption("Data source: Yahoo Finance (with Google Sheet LivePrice_GS/PrevClose_GS fallback for snapshot). Educational project, not investment advice.")
