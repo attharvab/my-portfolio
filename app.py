@@ -1,7 +1,3 @@
-# ✅ FULL UPDATED CODE (NO INCEPTION ALPHA ANYWHERE)
-# - Removed: inception alpha metric card + all related computation + functions
-# - Keeps: Total Return, Today Return, Daily Alpha (vs S&P), Webull Calendar, Country Exposure, Tabs, Picks table
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -28,6 +24,12 @@ SUMMARY_NOISE_REGEX = r"TOTAL|PORTFOLIO|SUMMARY|CASH"
 DEFAULT_BENCH = {"us": "^GSPC", "india": "^NSEI"}
 
 MACRO_ASSETS = ["^GSPC", "^NSEI", "GC=F", "SI=F"]
+ASSET_LABELS = {
+    "^GSPC": "^GSPC (S&P 500)",
+    "^NSEI": "^NSEI (Nifty 50)",
+    "GC=F": "GC=F (Gold)",
+    "SI=F": "SI=F (Silver)",
+}
 BENCH_LABEL = {"^GSPC": "S&P 500", "^NSEI": "Nifty 50", "GC=F": "Gold", "SI=F": "Silver"}
 
 # ============================================================
@@ -100,6 +102,16 @@ def _status_tag(alpha_day, bench):
 def _tooltip(label: str, help_text: str):
     safe_help = help_text.replace('"', "'")
     return f"""{label} <span title=\"{safe_help}\" style=\"cursor:default;\">ⓘ</span>"""
+
+def _is_india_ticker(tk: str) -> bool:
+    t = _clean_str(tk).upper()
+    return t.endswith(".NS") or t.endswith(".BO") or t in ["^NSEI"]
+
+def _is_us_ticker(tk: str) -> bool:
+    t = _clean_str(tk).upper()
+    if t in ["^GSPC"]:
+        return True
+    return (not _is_india_ticker(t))
 
 # ============================================================
 # Market session logic
@@ -344,7 +356,8 @@ def fetch_fx_usdinr_snapshot():
     return 83.0
 
 # ============================================================
-# 4Y daily returns: Portfolio ONLY (for calendar)
+# Daily portfolio returns for Webull calendar (NO alpha, NO benchmark)
+# FIXED: TZ-safe index handling (prevents Streamlit Cloud TypeError)
 # ============================================================
 @st.cache_data(ttl=1800)
 def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
@@ -355,8 +368,8 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
     if not tickers:
         return None
 
-    end = pd.Timestamp.utcnow().normalize()
-    start = end - pd.DateOffset(years=4)
+    end = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    start = (end - pd.DateOffset(years=4)).tz_localize(None)
 
     need = list(set(tickers + ["USDINR=X"]))
     px = yf.download(
@@ -379,6 +392,9 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
     close = close.dropna(how="all").ffill()
     if close.empty or "USDINR=X" not in close.columns:
         return None
+
+    # Force tz-naive index so comparisons never crash
+    close.index = pd.to_datetime(close.index).tz_localize(None)
 
     fx = close["USDINR=X"].dropna().ffill()
 
@@ -421,9 +437,16 @@ def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
             port_ret = port_ret.add(rets[tk].fillna(0.0) * float(w), fill_value=0.0)
 
     out = pd.DataFrame({"PortfolioRet": port_ret}).dropna()
-    out = out[out.index >= start]
     if out.empty:
         return None
+
+    # final safety filter (tz-naive on both sides)
+    out.index = pd.to_datetime(out.index).tz_localize(None)
+    out = out[out.index >= start]
+
+    if out.empty:
+        return None
+
     return out
 
 # ============================================================
@@ -437,7 +460,7 @@ def build_calendar_grid(daily_returns: pd.Series, year: int, month: int):
     month_end = month_start + pd.offsets.MonthEnd(1)
     sm = s[(s.index >= month_start) & (s.index <= month_end)]
 
-    cal = _cal.Calendar(firstweekday=0)
+    cal = _cal.Calendar(firstweekday=0)  # Monday
     weeks = cal.monthdatescalendar(year, month)
 
     y_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -632,7 +655,7 @@ calc_df = pd.DataFrame(rows)
 # Header + status
 # ============================================================
 st.title("📈 Atharva Portfolio Returns")
-st.markdown("This dashboard tracks my portfolio performance and **daily alpha vs benchmarks**.")
+st.markdown("This dashboard tracks my portfolio performance and daily alpha vs benchmarks.")
 st.caption("Returns shown as % changes. USD/INR is used to compute exposure weights only.")
 
 now_utc = datetime.now(timezone.utc)
@@ -670,12 +693,12 @@ spx_day = _safe_day("^GSPC")
 daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
 
 # ============================================================
-# Calendar returns series (portfolio only)
+# Calendar returns (no alpha, no inception)
 # ============================================================
 daily_ret_df_4y = build_portfolio_daily_returns_4y(df_sheet)
 
 # ============================================================
-# Top metrics row (NO INCEPTION ALPHA)
+# Top metrics row (REMOVED inception alpha card)
 # ============================================================
 m1, m2, m3 = st.columns(3)
 
