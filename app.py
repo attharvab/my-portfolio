@@ -725,10 +725,20 @@ def compute_portfolio_snapshot() -> Dict[str, Any]:
 # ============================================================
 # FastAPI app & HTML rendering
 # ============================================================
+from pathlib import Path
+
 app = FastAPI(title=APP_TITLE)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+# Resolve paths relative to this file for Vercel compatibility
+BASE_DIR = Path(__file__).parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+# Mount static files if directory exists
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @app.get("/", response_class=HTMLResponse)

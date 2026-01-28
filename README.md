@@ -40,3 +40,61 @@ This will create `portfolio.html` in the current directory with all CSS embedded
 - Share it as a single file
 
 The static file contains a snapshot of the portfolio data at the time it was generated. To update it, simply run the build script again.
+
+## Deploying to Vercel
+
+This FastAPI app is configured to deploy on Vercel as a serverless function.
+
+### Prerequisites
+
+1. Install Vercel CLI (optional, for local testing):
+
+   ```bash
+   npm i -g vercel
+   ```
+
+2. Make sure your project is in a git repository (Vercel works best with git).
+
+### Deployment Steps
+
+1. **Deploy via Vercel Dashboard** (recommended):
+   - Go to [vercel.com](https://vercel.com)
+   - Click "New Project"
+   - Import your git repository
+   - Vercel will auto-detect the Python/FastAPI setup from `vercel.json`
+   - Click "Deploy"
+
+2. **Deploy via CLI**:
+
+   ```bash
+   vercel
+   ```
+
+   Follow the prompts to link your project.
+
+3. **Production deployment**:
+   ```bash
+   vercel --prod
+   ```
+
+### How It Works
+
+- The `index.py` file at the root imports your FastAPI app
+- Vercel automatically detects FastAPI apps at recognized entrypoints (`index.py`, `app.py`, etc.)
+- `vercel.json` configures routes and builds
+- Static files (`/static/*`) are served directly by Vercel for better performance
+- All other routes are handled by the FastAPI serverless function
+
+### Environment Variables
+
+If you need to change the Google Sheet URL or other configuration, you can set environment variables in the Vercel dashboard under Project Settings → Environment Variables.
+
+### Local Testing
+
+Test the Vercel setup locally:
+
+```bash
+vercel dev
+```
+
+This will start a local server that mimics Vercel's serverless environment.
