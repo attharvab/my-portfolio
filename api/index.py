@@ -1,31 +1,18 @@
-from http.server import BaseHTTPRequestHandler
+"""
+Vercel serverless function entry point for FastAPI app.
+"""
+import sys
+import os
+from pathlib import Path
 
+# Add parent directory to path so we can import app
+parent_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(parent_dir))
 
-class handler(BaseHTTPRequestHandler):
-    """
-    Minimal Vercel Python function.
+# Change to parent directory to ensure relative paths work
+os.chdir(str(parent_dir))
 
-    NOTE:
-    - Vercel's serverless runtime is not designed for long‑running Streamlit
-      servers, so this endpoint only returns a helpful message explaining
-      that the app itself should be run with `streamlit run app.py`.
-    - For a fully supported Streamlit deployment, prefer Streamlit
-      Community Cloud or another full‑server host.
-    """
+from app import app
 
-    def do_GET(self):
-        body = (
-            "This project is a Streamlit app.\n\n"
-            "To run locally:\n"
-            "  streamlit run app.py\n\n"
-            "For production hosting, use Streamlit Community Cloud or a full "
-            "Python host. Vercel serverless functions cannot run a persistent "
-            "Streamlit server reliably."
-        )
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body.encode("utf-8"))))
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
-
+# For Vercel: export the app variable at module level
+# Vercel's Python runtime will detect FastAPI and handle it as ASGI

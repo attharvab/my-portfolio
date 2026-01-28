@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{{ title }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="header-main">
+        <h1>Atharva Portfolio Returns</h1>
+        <p class="subtitle">
+          Institutional-style tracking of my portfolio, performance, and alpha vs benchmarks.
+        </p>
+        <p class="timestamp">
+          Last sync (UTC): {{ snapshot.now_utc.strftime("%Y-%m-%d %H:%M") }}
+        </p>
+      </div>
+      <aside class="header-sidebar">
+        <h2>About Me</h2>
+        <p>
+          I am Atharva Bhutada, an equity research-focused finance professional. This dashboard
+          tracks my portfolio positioning, performance, and alpha vs benchmarks.
+        </p>
+        <div class="contact-block">
+          <h3>Contact</h3>
+          <ul>
+            <li>
+              LinkedIn:
+              <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noreferrer"
+                >linkedin.com/in/atharva-bhutada</a
+              >
+            </li>
+            <li>
+              Email:
+              <a href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a>
+            </li>
+            <li>
+              Substack:
+              <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer"
+                >atharvabhutada1.substack.com</a
+              >
+            </li>
+          </ul>
+        </div>
+      </aside>
+    </header>
+
+    <main class="content">
+      <section class="status-row">
+        {% if snapshot.status_type == "closed" %}
+        <div class="status-badge status-closed">
+          {{ snapshot.status_text }}
+        </div>
+        {% elif snapshot.status_type == "mixed" %}
+        <div class="status-badge status-mixed">
+          {{ snapshot.status_text }}
+        </div>
+        {% elif snapshot.status_type == "open" %}
+        <div class="status-badge status-open">
+          {{ snapshot.status_text }}
+        </div>
+        {% else %}
+        <div class="status-badge status-error">
+          {{ snapshot.status_text }}
+        </div>
+        {% endif %}
+      </section>
+
+      {% if snapshot.error %}
+      <section class="error-block">
+        <h2>Data Error</h2>
+        <p>{{ snapshot.error }}</p>
+      </section>
+      {% else %}
+
+      <section class="metric-row">
+        <div class="metric-card">
+          <h3>Total Return (Strategy)</h3>
+          <p class="metric-value">{{ snapshot.port_total_pct }}</p>
+          <p class="metric-caption">
+            Weighted return vs AvgCost using current exposure weights.
+          </p>
+        </div>
+        <div class="metric-card">
+          <h3>Today Return (Portfolio)</h3>
+          <p class="metric-value">{{ snapshot.port_day_pct }}</p>
+          <p class="metric-caption">
+            Weighted daily return using PrevClose vs LivePrice.
+          </p>
+        </div>
+        <div class="metric-card">
+          <h3>Daily Alpha (vs S&amp;P)</h3>
+          <p class="metric-value">{{ snapshot.daily_alpha_vs_spx_pct }}</p>
+          <p class="metric-caption">
+            Portfolio today return minus S&amp;P 500 today return.
+          </p>
+        </div>
+      </section>
+
+      <section class="upper-grid">
+        <div class="panel">
+          <h2>Webull-Style P&amp;L Calendar (Latest Month)</h2>
+          {% if not snapshot.calendar %}
+          <p class="placeholder">Calendar unavailable (not enough daily return data).</p>
+          {% else %}
+          <div class="calendar-meta">
+            <span>{{ snapshot.calendar.month_name }} {{ snapshot.calendar.year }}</span>
+          </div>
+          <table class="calendar-table">
+            <thead>
+              <tr>
+                <th></th>
+                {% for col in snapshot.calendar.columns %}
+                <th>{{ col }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in snapshot.calendar.rows %}
+              <tr>
+                <td class="calendar-row-label">{{ row.label }}</td>
+                {% for cell in row.cells %}
+                <td class="calendar-cell {{ cell.class }}">
+                  {% if cell.day %}
+                  <div class="cal-day">{{ cell.day }}</div>
+                  {% if cell.ret %}
+                  <div class="cal-ret">{{ cell.ret }}</div>
+                  {% endif %}
+                  {% endif %}
+                </td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+
+        <div class="panel">
+          <h2>Country Risk (Live Exposure)</h2>
+          {% if snapshot.country_alloc %}
+          <table class="simple-table">
+            <thead>
+              <tr>
+                <th>Region</th>
+                <th>Weight</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in snapshot.country_alloc %}
+              <tr>
+                <td>{{ row.region }}</td>
+                <td>{{ row.weight_pct }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p class="placeholder">No live exposure data available.</p>
+          {% endif %}
+
+          <div class="panel-split">
+            <div>
+              <h3>India View</h3>
+              {% if snapshot.india_summary.count == 0 %}
+              <p class="placeholder">No India holdings right now.</p>
+              {% else %}
+              <p>
+                Holdings: {{ snapshot.india_summary.count }} |
+                Live exposure weight: {{ snapshot.india_summary.weight_pct }}
+              </p>
+              {% endif %}
+            </div>
+            <div>
+              <h3>US View</h3>
+              {% if snapshot.us_summary.count == 0 %}
+              <p class="placeholder">No US holdings right now.</p>
+              {% else %}
+              <p>
+                Holdings: {{ snapshot.us_summary.count }} |
+                Live exposure weight: {{ snapshot.us_summary.weight_pct }}
+              </p>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Picks (Did each stock beat its index today?)</h2>
+        {% if not snapshot.picks %}
+        <p class="placeholder">No priced holdings available.</p>
+        {% else %}
+        <div class="table-wrapper">
+          <table class="picks-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Region</th>
+                <th>Benchmark</th>
+                <th>Compared To</th>
+                <th>Weight</th>
+                <th>Total Ret</th>
+                <th>Day Ret</th>
+                <th>Beat Index?</th>
+                <th>Score vs Index</th>
+                <th>Price Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in snapshot.picks %}
+              <tr>
+                <td>{{ row.Ticker }}</td>
+                <td>{{ row.Region }}</td>
+                <td>{{ row.Benchmark }}</td>
+                <td>{{ row.ComparedTo }}</td>
+                <td>{{ row.WeightPct }}</td>
+                <td>{{ row.TotalRetPct or "—" }}</td>
+                <td>{{ row.DayRetPct or "—" }}</td>
+                <td>{{ row.BeatIndexTag }}</td>
+                <td>{{ row.ScoreVsIndexPct or "—" }}</td>
+                <td>{{ row.PriceSource }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </section>
+
+      {% if snapshot.failures %}
+      <section class="panel">
+        <h2>Pricing Failures (Diagnostic)</h2>
+        <table class="simple-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in snapshot.failures %}
+            <tr>
+              <td>{{ row.Ticker }}</td>
+              <td>{{ row.Reason }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
+
+      {% endif %}
+
+      <footer class="page-footer">
+        <p>
+          Data source: Yahoo Finance (with Google Sheet fallback for snapshot). Educational project, not
+          investment advice.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>
+

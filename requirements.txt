@@ -1,4 +1,5 @@
-streamlit
+fastapi
+uvicorn[standard]
 pandas
 yfinance
-plotly
+jinja2
