@@ -4,24 +4,61 @@ This project exposes a read‑only, static HTML dashboard for Atharva's portfoli
 
 ## Running locally
 
-1. Create and activate a virtual environment (optional but recommended).
+### Option 1: Standard FastAPI (Recommended for Development)
+
+1. Create and activate a virtual environment (optional but recommended):
+
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
 2. Install dependencies:
 
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-3. Start the FastAPI app:
+3. Run the test script to verify setup:
 
-```bash
-uvicorn app:app --reload
-```
+   ```bash
+   python test_local.py
+   ```
 
-4. Open the dashboard in your browser at:
+4. Start the FastAPI app:
 
-```text
-http://127.0.0.1:8000/
-```
+   ```bash
+   uvicorn app:app --reload
+   ```
+
+5. Open the dashboard in your browser at:
+   ```text
+   http://127.0.0.1:8000/
+   ```
+
+### Option 2: Vercel Local Development (Test Production-like Environment)
+
+1. Install Vercel CLI:
+
+   ```bash
+   npm i -g vercel
+   ```
+
+2. Install Python dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run Vercel dev server:
+
+   ```bash
+   vercel dev
+   ```
+
+4. Follow the prompts and open the URL provided (usually `http://localhost:3000`)
+
+This simulates Vercel's serverless environment locally, which is useful for testing before deployment.
 
 The output is a static server‑rendered HTML page (no client‑side JavaScript), recomputed on each request using the latest available data.
 
@@ -91,10 +128,37 @@ If you need to change the Google Sheet URL or other configuration, you can set e
 
 ### Local Testing
 
-Test the Vercel setup locally:
+**Before deploying**, verify your setup works:
 
-```bash
-vercel dev
-```
+1. **Test imports and configuration**:
 
-This will start a local server that mimics Vercel's serverless environment.
+   ```bash
+   python test_local.py
+   ```
+
+   This verifies all imports work and paths are configured correctly.
+
+2. **Test with Vercel dev** (simulates production):
+
+   ```bash
+   vercel dev
+   ```
+
+   This starts a local server that mimics Vercel's serverless environment. Follow the prompts and visit the provided URL.
+
+3. **Test with standard FastAPI** (faster for development):
+   ```bash
+   uvicorn app:app --reload
+   ```
+   Visit `http://127.0.0.1:8000/`
+
+### Verification Checklist
+
+Before deploying to Vercel, ensure:
+
+- [ ] `python test_local.py` passes all tests
+- [ ] `index.py` exists at root level and imports `app` correctly
+- [ ] `vercel.json` points to `index.py`
+- [ ] Static files are in `static/` directory
+- [ ] Templates are in `templates/` directory
+- [ ] `requirements.txt` includes all dependencies

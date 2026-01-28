@@ -734,11 +734,46 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
-# Mount static files if directory exists
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+# Explicit static file route handler for Vercel serverless compatibility
+# Using explicit route instead of mount() for better serverless compatibility
+@app.get("/static/{file_path:path}")
+async def serve_static(file_path: str):
+    """Serve static files explicitly for Vercel serverless compatibility."""
+    from fastapi.responses import FileResponse
+    from fastapi import HTTPException
+    
+    file_full_path = STATIC_DIR / file_path
+    
+    # Security: ensure the file is within the static directory
+    try:
+        resolved_path = file_full_path.resolve()
+        static_resolved = STATIC_DIR.resolve()
+        resolved_path.relative_to(static_resolved)
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if file_full_path.exists() and file_full_path.is_file():
+        # Determine content type based on file extension
+        content_type = None
+        if file_path.endswith(".css"):
+            content_type = "text/css"
+        elif file_path.endswith(".js"):
+            content_type = "application/javascript"
+        elif file_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")):
+            content_type = None  # Let FileResponse auto-detect
+        
+        return FileResponse(
+            path=str(file_full_path),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable"
+            }
+        )
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.get("/", response_class=HTMLResponse)
