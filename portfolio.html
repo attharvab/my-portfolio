@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Atharva Portfolio Returns</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #050816;
+  color: #e5e7eb;
+}
+
+body {
+  line-height: 1.5;
+}
+
+a {
+  color: #60a5fa;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.page-header {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr);
+  gap: 2.5rem;
+  padding: 2.5rem 6vw 1.5rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+  background: radial-gradient(circle at top left, #1e293b, #020617 55%);
+}
+
+.header-main h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.9rem, 3vw, 2.4rem);
+}
+
+.subtitle {
+  margin: 0;
+  color: #9ca3af;
+  max-width: 36rem;
+}
+
+.timestamp {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.header-sidebar {
+  padding: 1.25rem 1.5rem;
+  border-radius: 0.9rem;
+  background: linear-gradient(
+    135deg,
+    rgba(15, 23, 42, 0.92),
+    rgba(30, 64, 175, 0.65)
+  );
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.7);
+}
+
+.header-sidebar h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1.15rem;
+}
+
+.header-sidebar p {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  font-size: 0.93rem;
+  color: #e5e7eb;
+}
+
+.contact-block h3 {
+  margin: 0.25rem 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.contact-block ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.contact-block li + li {
+  margin-top: 0.25rem;
+}
+
+.content {
+  padding: 1.5rem 6vw 2.5rem;
+}
+
+.status-row {
+  margin-bottom: 1.5rem;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.status-open {
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.6);
+  color: #bbf7d0;
+}
+
+.status-mixed {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #bfdbfe;
+}
+
+.status-closed {
+  background: rgba(234, 179, 8, 0.15);
+  border-color: rgba(234, 179, 8, 0.7);
+  color: #fef9c3;
+}
+
+.status-error {
+  background: rgba(220, 38, 38, 0.15);
+  border-color: rgba(220, 38, 38, 0.7);
+  color: #fecaca;
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.metric-card {
+  padding: 1rem 1.2rem;
+  border-radius: 0.9rem;
+  background: radial-gradient(
+    circle at top,
+    rgba(30, 64, 175, 0.45),
+    rgba(15, 23, 42, 0.95)
+  );
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.75);
+}
+
+.metric-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.metric-value {
+  margin: 0 0 0.3rem;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.metric-caption {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.upper-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(0, 1.4fr);
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+.panel {
+  padding: 1.2rem 1.4rem;
+  background: rgba(15, 23, 42, 0.9);
+  border-radius: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  box-shadow: 0 14px 35px rgba(15, 23, 42, 0.72);
+}
+
+.panel h2 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  font-size: 1.1rem;
+}
+
+.panel-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  border-top: 1px dashed rgba(148, 163, 184, 0.4);
+  padding-top: 0.8rem;
+  font-size: 0.9rem;
+}
+
+.panel-split h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+}
+
+.placeholder {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 0.88rem;
+  color: #9ca3af;
+}
+
+.calendar-meta {
+  font-size: 0.9rem;
+  color: #9ca3af;
+  margin-bottom: 0.4rem;
+}
+
+.calendar-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.8rem;
+}
+
+.calendar-table th,
+.calendar-table td {
+  border: 1px solid rgba(31, 41, 55, 0.9);
+  padding: 0.3rem 0.2rem;
+  text-align: center;
+}
+
+.calendar-table thead th {
+  background: rgba(15, 23, 42, 0.95);
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.calendar-row-label {
+  background: rgba(15, 23, 42, 0.98);
+  font-weight: 500;
+  width: 2.4rem;
+}
+
+.calendar-cell {
+  height: 3rem;
+  vertical-align: top;
+}
+
+.cal-day {
+  font-weight: 600;
+  margin-bottom: 0.1rem;
+}
+
+.cal-ret {
+  font-size: 0.7rem;
+}
+
+.cal-empty {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.cal-neutral {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.cal-weak-pos {
+  background: linear-gradient(
+    135deg,
+    rgba(22, 163, 74, 0.28),
+    rgba(15, 23, 42, 0.92)
+  );
+}
+
+.cal-pos {
+  background: linear-gradient(
+    135deg,
+    rgba(22, 163, 74, 0.55),
+    rgba(15, 23, 42, 0.9)
+  );
+}
+
+.cal-strong-pos {
+  background: linear-gradient(
+    135deg,
+    rgba(22, 163, 74, 0.85),
+    rgba(15, 23, 42, 0.9)
+  );
+}
+
+.cal-weak-neg {
+  background: linear-gradient(
+    135deg,
+    rgba(220, 38, 38, 0.28),
+    rgba(15, 23, 42, 0.92)
+  );
+}
+
+.cal-neg {
+  background: linear-gradient(
+    135deg,
+    rgba(220, 38, 38, 0.55),
+    rgba(15, 23, 42, 0.9)
+  );
+}
+
+.cal-strong-neg {
+  background: linear-gradient(
+    135deg,
+    rgba(220, 38, 38, 0.85),
+    rgba(15, 23, 42, 0.9)
+  );
+}
+
+.simple-table,
+.picks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.simple-table th,
+.simple-table td,
+.picks-table th,
+.picks-table td {
+  border: 1px solid rgba(31, 41, 55, 0.9);
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+}
+
+.simple-table thead th,
+.picks-table thead th {
+  background: rgba(15, 23, 42, 0.96);
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.table-wrapper {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.picks-table tbody tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.error-block {
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 0.9rem;
+  background: rgba(127, 29, 29, 0.4);
+  border: 1px solid rgba(220, 38, 38, 0.9);
+}
+
+.page-footer {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(31, 41, 55, 0.9);
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+@media (max-width: 960px) {
+  .page-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .upper-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+</style>
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="header-main">
+        <h1>Atharva Portfolio Returns</h1>
+        <p class="subtitle">
+          Institutional-style tracking of my portfolio, performance, and alpha vs benchmarks.
+        </p>
+        <p class="timestamp">
+          Last sync (UTC): 2026-01-28 21:04
+        </p>
+      </div>
+      <aside class="header-sidebar">
+        <h2>About Me</h2>
+        <p>
+          I am Atharva Bhutada, an equity research-focused finance professional. This dashboard
+          tracks my portfolio positioning, performance, and alpha vs benchmarks.
+        </p>
+        <div class="contact-block">
+          <h3>Contact</h3>
+          <ul>
+            <li>
+              LinkedIn:
+              <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noreferrer"
+                >linkedin.com/in/atharva-bhutada</a
+              >
+            </li>
+            <li>
+              Email:
+              <a href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a>
+            </li>
+            <li>
+              Substack:
+              <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer"
+                >atharvabhutada1.substack.com</a
+              >
+            </li>
+          </ul>
+        </div>
+      </aside>
+    </header>
+
+    <main class="content">
+      <section class="status-row">
+        
+        <div class="status-badge status-closed">
+          Markets are currently closed or prices are not updating. Showing data from the last trading session.
+        </div>
+        
+      </section>
+
+      
+
+      <section class="metric-row">
+        <div class="metric-card">
+          <h3>Total Return (Strategy)</h3>
+          <p class="metric-value">106.81%</p>
+          <p class="metric-caption">
+            Weighted return vs AvgCost using current exposure weights.
+          </p>
+        </div>
+        <div class="metric-card">
+          <h3>Today Return (Portfolio)</h3>
+          <p class="metric-value">3.52%</p>
+          <p class="metric-caption">
+            Weighted daily return using PrevClose vs LivePrice.
+          </p>
+        </div>
+        <div class="metric-card">
+          <h3>Daily Alpha (vs S&amp;P)</h3>
+          <p class="metric-value">3.52%</p>
+          <p class="metric-caption">
+            Portfolio today return minus S&amp;P 500 today return.
+          </p>
+        </div>
+      </section>
+
+      <section class="upper-grid">
+        <div class="panel">
+          <h2>Webull-Style P&amp;L Calendar (Latest Month)</h2>
+          
+          <div class="calendar-meta">
+            <span>January 2026</span>
+          </div>
+          <table class="calendar-table">
+            <thead>
+              <tr>
+                <th></th>
+                
+                <th>W1</th>
+                
+                <th>W2</th>
+                
+                <th>W3</th>
+                
+                <th>W4</th>
+                
+                <th>W5</th>
+                
+              </tr>
+            </thead>
+            <tbody>
+              
+              <tr>
+                <td class="calendar-row-label">Mon</td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">5</div>
+                  
+                  <div class="cal-ret">-0.09%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-pos">
+                  
+                  <div class="cal-day">12</div>
+                  
+                  <div class="cal-ret">0.63%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">19</div>
+                  
+                  <div class="cal-ret">-0.31%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-pos">
+                  
+                  <div class="cal-day">26</div>
+                  
+                  <div class="cal-ret">0.19%</div>
+                  
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Tue</td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">6</div>
+                  
+                  <div class="cal-ret">-0.45%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">13</div>
+                  
+                  <div class="cal-ret">-0.44%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-neg">
+                  
+                  <div class="cal-day">20</div>
+                  
+                  <div class="cal-ret">-1.62%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">27</div>
+                  
+                  <div class="cal-ret">-0.30%</div>
+                  
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Wed</td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">7</div>
+                  
+                  <div class="cal-ret">-0.09%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">14</div>
+                  
+                  <div class="cal-ret">-0.23%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">21</div>
+                  
+                  <div class="cal-ret">-0.41%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-strong-pos">
+                  
+                  <div class="cal-day">28</div>
+                  
+                  <div class="cal-ret">3.53%</div>
+                  
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Thu</td>
+                
+                <td class="calendar-cell cal-weak-pos">
+                  
+                  <div class="cal-day">1</div>
+                  
+                  <div class="cal-ret">0.15%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">8</div>
+                  
+                  <div class="cal-ret">-1.11%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">15</div>
+                  
+                  <div class="cal-ret">-0.08%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-pos">
+                  
+                  <div class="cal-day">22</div>
+                  
+                  <div class="cal-ret">1.04%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Fri</td>
+                
+                <td class="calendar-cell cal-pos">
+                  
+                  <div class="cal-day">2</div>
+                  
+                  <div class="cal-ret">1.33%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">9</div>
+                  
+                  <div class="cal-ret">-0.63%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">16</div>
+                  
+                  <div class="cal-ret">-0.02%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-weak-neg">
+                  
+                  <div class="cal-day">23</div>
+                  
+                  <div class="cal-ret">-0.84%</div>
+                  
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Sat</td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+              </tr>
+              
+              <tr>
+                <td class="calendar-row-label">Sun</td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+                <td class="calendar-cell cal-empty">
+                  
+                </td>
+                
+              </tr>
+              
+            </tbody>
+          </table>
+          
+        </div>
+
+        <div class="panel">
+          <h2>Country Risk (Live Exposure)</h2>
+          
+          <table class="simple-table">
+            <thead>
+              <tr>
+                <th>Region</th>
+                <th>Weight</th>
+              </tr>
+            </thead>
+            <tbody>
+              
+              <tr>
+                <td>India</td>
+                <td>95.29%</td>
+              </tr>
+              
+              <tr>
+                <td>US</td>
+                <td>4.71%</td>
+              </tr>
+              
+            </tbody>
+          </table>
+          
+
+          <div class="panel-split">
+            <div>
+              <h3>India View</h3>
+              
+              <p>
+                Holdings: 11 |
+                Live exposure weight: 95.29%
+              </p>
+              
+            </div>
+            <div>
+              <h3>US View</h3>
+              
+              <p>
+                Holdings: 3 |
+                Live exposure weight: 4.71%
+              </p>
+              
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Picks (Did each stock beat its index today?)</h2>
+        
+        <div class="table-wrapper">
+          <table class="picks-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Region</th>
+                <th>Benchmark</th>
+                <th>Compared To</th>
+                <th>Weight</th>
+                <th>Total Ret</th>
+                <th>Day Ret</th>
+                <th>Beat Index?</th>
+                <th>Score vs Index</th>
+                <th>Price Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              
+              <tr>
+                <td>BEL.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>10.59%</td>
+                <td>185.14%</td>
+                <td>8.91%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>8.24%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>COALINDIA.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>10.96%</td>
+                <td>183.72%</td>
+                <td>5.00%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>4.34%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>GC=F</td>
+                <td>India</td>
+                <td>GC=F (Gold)</td>
+                <td>vs Gold</td>
+                <td>7.32%</td>
+                <td>236.75%</td>
+                <td>6.32%</td>
+                <td>Beating Market (vs Index)</td>
+                <td>0.00%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>GOLDIAM.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>4.74%</td>
+                <td>75.05%</td>
+                <td>10.17%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>9.51%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>GOOG</td>
+                <td>US</td>
+                <td>^GSPC (S&P 500)</td>
+                <td>vs S&P 500 (US)</td>
+                <td>3.36%</td>
+                <td>17.85%</td>
+                <td>0.38%</td>
+                <td>Beating Market (vs S&P)</td>
+                <td>0.39%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>GOSS</td>
+                <td>US</td>
+                <td>^GSPC (S&P 500)</td>
+                <td>vs S&P 500 (US)</td>
+                <td>0.51%</td>
+                <td>0.39%</td>
+                <td>-3.41%</td>
+                <td>Lagging Market (vs S&P)</td>
+                <td>-3.40%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>HDFCBANK.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>9.10%</td>
+                <td>22.51%</td>
+                <td>0.68%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>0.02%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>INFY.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>5.69%</td>
+                <td>4.66%</td>
+                <td>-0.96%</td>
+                <td>Lagging Market (vs Nifty)</td>
+                <td>-1.63%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>ITC.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>4.35%</td>
+                <td>20.97%</td>
+                <td>0.78%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>0.12%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>M&M.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>16.46%</td>
+                <td>107.54%</td>
+                <td>1.64%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>0.98%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>NFLX</td>
+                <td>US</td>
+                <td>^GSPC (S&P 500)</td>
+                <td>vs S&P 500 (US)</td>
+                <td>0.84%</td>
+                <td>-4.46%</td>
+                <td>-1.10%</td>
+                <td>Lagging Market (vs S&P)</td>
+                <td>-1.09%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>NMDC.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>3.00%</td>
+                <td>83.56%</td>
+                <td>3.40%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>2.73%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>RELIANCE.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>10.75%</td>
+                <td>24.97%</td>
+                <td>1.17%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>0.51%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+              <tr>
+                <td>TVSMOTOR.NS</td>
+                <td>India</td>
+                <td>^NSEI (Nifty 50)</td>
+                <td>vs Nifty 50 (India)</td>
+                <td>12.33%</td>
+                <td>158.26%</td>
+                <td>4.50%</td>
+                <td>Beating Market (vs Nifty)</td>
+                <td>3.83%</td>
+                <td>yfinance_bulk</td>
+              </tr>
+              
+            </tbody>
+          </table>
+        </div>
+        
+      </section>
+
+      
+
+      
+
+      <footer class="page-footer">
+        <p>
+          Data source: Yahoo Finance (with Google Sheet fallback for snapshot). Educational project, not
+          investment advice.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>
