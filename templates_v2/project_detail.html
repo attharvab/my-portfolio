@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <a class="link" href="/projects">← Back to Projects</a>
+    <h1 style="margin-top: 10px;">{{ project.title }}</h1>
+
+    <div class="tags" style="margin: 10px 0 18px;">
+      {% for t in project.tags %}
+        <span class="tag">{{ t }}</span>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <p class="muted">{{ project.summary }}</p>
+    </div>
+
+    <div class="card prose">
+      {% for block in project.content %}
+        {% if block.type == "h2" %}
+          <h2>{{ block.text }}</h2>
+        {% elif block.type == "p" %}
+          <p>{{ block.text }}</p>
+        {% endif %}
+      {% endfor %}
+    </div>
+
+    {% if project.links and project.links|length > 0 %}
+    <div class="card">
+      <h3>Links</h3>
+      <ul class="list">
+        {% for l in project.links %}
+          <li><a class="link" href="{{ l.url }}" target="_blank" rel="noopener">{{ l.label }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
