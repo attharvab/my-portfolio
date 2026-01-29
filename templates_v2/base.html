@@ -2,57 +2,51 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{ title if title else "Atharva Bhutada" }}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ title or "Atharva Bhutada" }}</title>
 
-  <!-- ===== Google Analytics (GA4) =====
-  Replace G-XXXXXXXXXX with your GA4 Measurement ID.
-  If you do not want GA on localhost/dev, keep GA_ID empty in backend.
-  -->
-  {% if GA_ID %}
-  <script async src="https://www.googletagmanager.com/gtag/js?id={{ GA_ID }}"></script>
+  <link rel="stylesheet" href="/static/site_v2.css" />
+
+  <!-- Google Analytics (optional) -->
+  {% if ga_measurement_id %}
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-    gtag('config', '{{ GA_ID }}');
+    gtag('config', '{{ ga_measurement_id }}');
   </script>
   {% endif %}
-
-  <link rel="stylesheet" href="/static_v2/styles.css" />
 </head>
+
 <body>
   <header class="topbar">
-    <div class="container topbar-inner">
+    <div class="container topbar__inner">
       <a class="brand" href="/">Atharva Bhutada</a>
       <nav class="nav">
         <a href="/#about">About</a>
-        <a href="/portfolio">Portfolio</a>
+        <a href="/#portfolio">Portfolio</a>
+        <a href="/#blog">Blog</a>
         <a href="/projects">Projects</a>
-        <a href="/blog">Blog</a>
         <a href="/resume">Resume</a>
-        <a href="/contact" class="nav-cta">Contact</a>
+        <a href="/contact">Contact</a>
       </nav>
     </div>
   </header>
 
-  <main class="main">
+  <main class="container">
     {% block content %}{% endblock %}
   </main>
 
   <footer class="footer">
-    <div class="container footer-inner">
-      <div>© {{ now_year if now_year else "" }} Atharva Bhutada</div>
-      <div class="footer-links">
+    <div class="container footer__inner">
+      <div>© {{ year }} Atharva Bhutada</div>
+      <div class="footer__links">
+        <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noreferrer">LinkedIn</a>
+        <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer">Substack</a>
         <a href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a>
-        <span>·</span>
-        <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noopener">LinkedIn</a>
-        <span>·</span>
-        <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noopener">Substack</a>
       </div>
     </div>
   </footer>
-
-  <script src="/static_v2/app.js"></script>
 </body>
 </html>
