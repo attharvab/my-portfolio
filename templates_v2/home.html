@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="hero">
+  <div class="hero__left">
+    <h1>Atharva Portfolio Returns</h1>
+    <p class="muted">
+      Institutional-style tracking of my portfolio performance, and daily alpha vs benchmarks.
+    </p>
+
+    <div class="ctaRow">
+      <a class="btn" href="#portfolio">View Portfolio</a>
+      <a class="btn btn--ghost" href="/projects">View Projects</a>
+    </div>
+
+    <div class="highlightGrid">
+      <div class="card">
+        <div class="card__title">Focus</div>
+        <div class="card__text">Fundamental research, valuation discipline, and decision-making under uncertainty.</div>
+      </div>
+      <div class="card">
+        <div class="card__title">Tools</div>
+        <div class="card__text">Python, dashboards, factor-aware thinking, and structured writeups.</div>
+      </div>
+      <div class="card">
+        <div class="card__title">Location</div>
+        <div class="card__text">Boston, MA, open to relocate.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero__right">
+    <div class="panel">
+      <h3>Quick Links</h3>
+      <div class="panel__links">
+        <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noreferrer">linkedin.com/in/atharva-bhutada</a>
+        <a href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a>
+        <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer">atharvabhutada1.substack.com</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="about" class="section">
+  <h2>About</h2>
+  <div class="card card--pad">
+    <p>
+      Hey, I am Atharva Bhutada, a finance professional with a Master’s in Finance from Babson College and around three years of experience as an equity research analyst.
+      I got into finance at 14 after reading Rich Dad Poor Dad, which changed how I thought about money, shifting my focus from looking rich to building wealth that compounds over time.
+      This led me to pursue finance as my domain, with the goal of understanding markets better and helping others achieve financial independence.
+    </p>
+    <p>
+      Since then, I have focused on fundamental equity research, combining deep business analysis, valuation modeling, and on-the-ground research to uncover undervalued opportunities.
+      I have worked across metals, industrials, energy, and consumer sectors as a sector-agnostic analyst, translating market dynamics into high-conviction investment ideas.
+    </p>
+    <p class="quote">
+      My approach is guided by Warren Buffett’s principle: “The big money is not in buying or selling, but in the waiting.”
+    </p>
+  </div>
+</section>
+
+<section id="portfolio" class="section">
+  <div class="section__row">
+    <h2>Portfolio</h2>
+    <div class="muted">Live dashboard embedded from your existing portfolio page.</div>
+  </div>
+
+  <!-- Option A: Embed your EXISTING portfolio route (recommended) -->
+  <div class="embed">
+    <iframe
+      title="Portfolio Dashboard"
+      src="/portfolio"
+      loading="lazy"
+      referrerpolicy="no-referrer"
+    ></iframe>
+  </div>
+
+  <!-- If your existing portfolio URL is NOT /portfolio, change src to that route. -->
+</section>
+
+<section id="blog" class="section">
+  <div class="section__row">
+    <h2>Blog</h2>
+    <a class="link" href="/blog">View all</a>
+  </div>
+
+  <div class="grid">
+    {% for post in posts %}
+      <a class="card card--pad card--link" href="{{ post.url }}" target="_blank" rel="noreferrer">
+        <div class="card__title">{{ post.title }}</div>
+        <div class="muted">{{ post.date }}</div>
+        <div class="card__text">{{ post.summary }}</div>
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="muted small">
+    Source: Substack feed. If posts do not show due to feed limits, open Substack directly:
+    <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer">atharvabhutada1.substack.com</a>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section__row">
+    <h2>Projects</h2>
+    <a class="link" href="/projects">View all</a>
+  </div>
+
+  <div class="grid">
+    {% for p in projects[:6] %}
+      <a class="card card--pad card--link" href="/projects/{{ p.slug }}">
+        <div class="card__title">{{ p.title }}</div>
+        <div class="muted">{{ p.one_liner }}</div>
+        <div class="card__text">{{ p.overview_short }}</div>
+        <div class="link small">Read more →</div>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section">
+  <div class="section__row">
+    <h2>Resume</h2>
+    <a class="link" href="/resume">Open</a>
+  </div>
+  <div class="card card--pad">
+    <div class="muted">Keep this as a page for now. Later we can add a PDF download button and a clean one-page layout.</div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section__row">
+    <h2>Contact</h2>
+    <a class="link" href="/contact">Message me</a>
+  </div>
+  <div class="card card--pad">
+    <div class="muted">Email: <a href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a></div>
+    <div class="muted">LinkedIn: <a href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noreferrer">atharva-bhutada</a></div>
+    <div class="muted">Substack: <a href="https://atharvabhutada1.substack.com/" target="_blank" rel="noreferrer">atharvabhutada1.substack.com</a></div>
+  </div>
+</section>
+
+{% endblock %}
