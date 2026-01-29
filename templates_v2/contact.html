@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <h1>Contact</h1>
+    <p class="muted">Reach out directly or send a message below.</p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>Direct</h3>
+        <ul class="list">
+          <li><strong>Email:</strong> <a class="link" href="mailto:abhutada1@babson.edu">abhutada1@babson.edu</a></li>
+          <li><strong>LinkedIn:</strong> <a class="link" href="https://linkedin.com/in/atharva-bhutada" target="_blank" rel="noopener">linkedin.com/in/atharva-bhutada</a></li>
+          <li><strong>Substack:</strong> <a class="link" href="https://atharvabhutada1.substack.com/" target="_blank" rel="noopener">atharvabhutada1.substack.com</a></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Message me</h3>
+
+        <!-- ===== Option A (Recommended): Formspree =====
+          1) Create a Formspree form, get your endpoint URL:
+             https://formspree.io/f/XXXXYYYY
+          2) Replace FORM_ACTION below with that endpoint.
+        -->
+        <form method="POST" action="{{ FORMSPREE_ACTION if FORMSPREE_ACTION else '' }}" class="form">
+          <label>
+            Your Email
+            <input type="email" name="email" placeholder="name@email.com" required />
+          </label>
+
+          <label>
+            Message
+            <textarea name="message" rows="6" placeholder="Write your message..." required></textarea>
+          </label>
+
+          <!-- Optional: subject line -->
+          <input type="hidden" name="_subject" value="New message from atharvabhutada.com" />
+
+          <button class="btn" type="submit">Send Message</button>
+
+          {% if not FORMSPREE_ACTION %}
+          <p class="muted" style="margin-top: 10px;">
+            Form is not connected yet. Add your Formspree endpoint in the backend as <code>FORMSPREE_ACTION</code>.
+          </p>
+          {% endif %}
+        </form>
+
+        <hr class="sep" />
+
+        <!-- ===== Option B (Alternate): Web3Forms =====
+          If you prefer Web3Forms, use this instead of Formspree.
+          Replace WEB3FORMS_KEY in backend and set USE_WEB3FORMS=true.
+        -->
+        {% if USE_WEB3FORMS %}
+        <form class="form" method="POST" action="https://api.web3forms.com/submit">
+          <input type="hidden" name="access_key" value="{{ WEB3FORMS_KEY }}" />
+          <input type="hidden" name="subject" value="New message from atharvabhutada.com" />
+
+          <label>
+            Your Email
+            <input type="email" name="email" required />
+          </label>
+
+          <label>
+            Message
+            <textarea name="message" rows="6" required></textarea>
+          </label>
+
+          <button class="btn" type="submit">Send Message</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
