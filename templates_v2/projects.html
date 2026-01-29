@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="container">
+    <h1>Projects</h1>
+    <p class="muted">
+      Project name + summary, click to open the full write-up.
+    </p>
+
+    <div class="grid">
+      {% for p in projects %}
+      <a class="card card-link" href="/projects/{{ p.slug }}">
+        <h3>{{ p.title }}</h3>
+        <p class="muted">{{ p.summary }}</p>
+        <div class="tags">
+          {% for t in p.tags %}
+            <span class="tag">{{ t }}</span>
+          {% endfor %}
+        </div>
+        <div class="readmore">Read more →</div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}
