@@ -736,6 +736,8 @@ STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+from projects_data import PROJECTS
+from blog_posts import POSTS
 
 
 # Explicit static file route handler for Vercel serverless compatibility
