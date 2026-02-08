@@ -786,7 +786,6 @@ def _base_context(request: Request, title: str) -> Dict[str, Any]:
         "email_address": EMAIL_ADDRESS,
         "linkedin_url": LINKEDIN_URL,
         "substack_url": SUBSTACK_URL,
-        "streamlit_url": STREAMLIT_URL,
         "form_provider": form_provider,
         "form_action_url": form_action_url,
         "web3forms_access_key": web3_key or None,
