@@ -9,9 +9,7 @@ import yfinance as yf
 import os
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
 
 APP_TITLE = "Atharva Portfolio Returns"
 
@@ -103,12 +101,12 @@ def _bench_context(bench: str):
         return "vs S&P 500 (US)"
     if b in ["GC=F", "SI=F"]:
         return f"vs {BENCH_LABEL.get(b, b)}"
-    return f"vs {b}" if b else "—"
+    return f"vs {b}" if b else "-"
 
 
 def _status_tag(alpha_day, bench):
     if alpha_day is None or pd.isna(alpha_day):
-        return "—"
+        return "-"
     short = "Nifty" if bench == "^NSEI" else ("S&P" if bench == "^GSPC" else "Index")
     return (f"Beating Market (vs {short})") if alpha_day >= 0 else (f"Lagging Market (vs {short})")
 
@@ -360,7 +358,6 @@ def fetch_fx_usdinr_snapshot():
 
 # ============================================================
 # Daily portfolio returns for Webull calendar (NO alpha, NO benchmark)
-# (kept to compute a static calendar for the latest month)
 # ============================================================
 def build_portfolio_daily_returns_4y(holdings_df: pd.DataFrame):
     if holdings_df is None or holdings_df.empty:
@@ -487,9 +484,8 @@ def build_latest_calendar_context(daily_returns: Optional[pd.Series]) -> Optiona
         return None
 
     idx = pd.to_datetime(daily_returns.index).tz_localize(None)
-    min_dt, max_dt = idx.min(), idx.max()
-    year = max_dt.year
-    month = max_dt.month
+    year = idx.max().year
+    month = idx.max().month
 
     z, text, x_labels, y_labels = build_calendar_grid(daily_returns, year, month)
 
@@ -497,7 +493,7 @@ def build_latest_calendar_context(daily_returns: Optional[pd.Series]) -> Optiona
     max_abs = float(np.nanmax(np.abs(z[finite]))) if finite.any() else 0.01
     max_abs = max(max_abs, 0.01)
 
-    grid: List[List[Dict[str, Any]]] = []
+    grid: List[Dict[str, Any]] = []
     for row_idx, label in enumerate(y_labels):
         row_cells: List[Dict[str, Any]] = []
         for col_idx in range(len(x_labels)):
@@ -508,19 +504,9 @@ def build_latest_calendar_context(daily_returns: Optional[pd.Series]) -> Optiona
                 pct = val * 100.0
                 norm = abs(val) / max_abs if max_abs > 0 else 0.0
                 if val > 0:
-                    if norm > 0.66:
-                        css = "cal-strong-pos"
-                    elif norm > 0.33:
-                        css = "cal-pos"
-                    else:
-                        css = "cal-weak-pos"
+                    css = "cal-strong-pos" if norm > 0.66 else ("cal-pos" if norm > 0.33 else "cal-weak-pos")
                 elif val < 0:
-                    if norm > 0.66:
-                        css = "cal-strong-neg"
-                    elif norm > 0.33:
-                        css = "cal-neg"
-                    else:
-                        css = "cal-weak-neg"
+                    css = "cal-strong-neg" if norm > 0.66 else ("cal-neg" if norm > 0.33 else "cal-weak-neg")
                 else:
                     css = "cal-neutral"
 
@@ -648,15 +634,11 @@ def compute_portfolio_snapshot() -> Dict[str, Any]:
     daily_alpha_vs_spx = (port_day - spx_day) if (spx_day is not None) else None
 
     daily_ret_df_4y = build_portfolio_daily_returns_4y(df_sheet)
-    calendar_ctx = (
-        build_latest_calendar_context(daily_ret_df_4y["PortfolioRet"]) if daily_ret_df_4y is not None else None
-    )
+    calendar_ctx = build_latest_calendar_context(daily_ret_df_4y["PortfolioRet"]) if daily_ret_df_4y is not None else None
 
-    # region splits
     india_df = calc_df[calc_df["Region"].str.upper() == "INDIA"].copy()
     us_df = calc_df[calc_df["Region"].str.upper() == "US"].copy()
 
-    # picks table
     show = calc_df.copy()
     show["WeightPct"] = show["Weight"] * 100
     show["TotalRetPct"] = show["Total_Ret"].apply(_fmt_pct)
@@ -684,9 +666,7 @@ def compute_portfolio_snapshot() -> Dict[str, Any]:
                 "TotalRetPct": None if pd.isna(row["TotalRetPct"]) else f"{row['TotalRetPct']:.2f}%",
                 "DayRetPct": None if pd.isna(row["DayRetPct"]) else f"{row['DayRetPct']:.2f}%",
                 "BeatIndexTag": row["Beat_Index_Tag"],
-                "ScoreVsIndexPct": None
-                if pd.isna(row["ScoreVsIndexPct"])
-                else f"{row['ScoreVsIndexPct']:.2f}%",
+                "ScoreVsIndexPct": None if pd.isna(row["ScoreVsIndexPct"]) else f"{row['ScoreVsIndexPct']:.2f}%",
                 "PriceSource": row["PriceSource"],
             }
         )
@@ -702,9 +682,7 @@ def compute_portfolio_snapshot() -> Dict[str, Any]:
         "status_type": status_type,
         "port_total_pct": f"{port_total * 100:.2f}%",
         "port_day_pct": f"{port_day * 100:.2f}%",
-        "daily_alpha_vs_spx_pct": "—"
-        if daily_alpha_vs_spx is None
-        else f"{daily_alpha_vs_spx * 100:.2f}%",
+        "daily_alpha_vs_spx_pct": "-" if daily_alpha_vs_spx is None else f"{daily_alpha_vs_spx * 100:.2f}%",
         "calendar": calendar_ctx,
         "india_summary": {
             "count": int(len(india_df)),
@@ -730,14 +708,15 @@ from pathlib import Path
 
 app = FastAPI(title=APP_TITLE)
 
-# Resolve paths relative to this file for Vercel compatibility
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
 from projects_data import PROJECTS
 from blog_posts import POSTS
+
 EMAIL_ADDRESS = "abhutada1@babson.edu"
 LINKEDIN_URL = "https://linkedin.com/in/atharva-bhutada"
 SUBSTACK_URL = "https://atharvabhutada1.substack.com/"
@@ -792,64 +771,33 @@ def _base_context(request: Request, title: str) -> Dict[str, Any]:
     }
 
 
-# Explicit static file route handler for Vercel serverless compatibility
-# Using explicit route instead of mount() for better serverless compatibility
 @app.get("/static/{file_path:path}")
 async def serve_static(file_path: str):
-    """Serve static files explicitly for Vercel serverless compatibility."""
     from fastapi.responses import FileResponse
-    from fastapi import HTTPException
-    
+
     file_full_path = STATIC_DIR / file_path
-    
-    # Security: ensure the file is within the static directory
+
     try:
         resolved_path = file_full_path.resolve()
         static_resolved = STATIC_DIR.resolve()
         resolved_path.relative_to(static_resolved)
     except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     if file_full_path.exists() and file_full_path.is_file():
-        # Determine content type based on file extension
         content_type = None
         if file_path.endswith(".css"):
             content_type = "text/css"
         elif file_path.endswith(".js"):
             content_type = "application/javascript"
-        elif file_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")):
-            content_type = None  # Let FileResponse auto-detect
-        
+
         return FileResponse(
             path=str(file_full_path),
             media_type=content_type,
-            headers={
-                "Cache-Control": "public, max-age=31536000, immutable"
-            }
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
-    else:
-        raise HTTPException(status_code=404, detail="File not found")
 
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    ctx = _base_context(request, "Atharva Bhutada")
-
-    posts = POSTS[:30] if isinstance(POSTS, list) else []
-    latest_posts = posts[:6]
-
-    projects = PROJECTS if isinstance(PROJECTS, list) else []
-    featured_projects = projects[:6]
-
-    ctx.update(
-        {
-            "about_text": ABOUT_TEXT,
-            "highlights": HIGHLIGHTS,
-            "latest_posts": latest_posts,
-            "featured_projects": featured_projects,
-        }
-    )
-
-    return templates.TemplateResponse("home.html", ctx)
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -874,9 +822,6 @@ async def home(request: Request):
     return templates.TemplateResponse("home.html", ctx)
 
 
-# =========================
-# PORTFOLIO DASHBOARD
-# =========================
 @app.get("/portfolio", response_class=HTMLResponse)
 async def portfolio(request: Request):
     try:
@@ -903,9 +848,6 @@ async def portfolio(request: Request):
     return templates.TemplateResponse("index.html", ctx)
 
 
-# =========================
-# SITE PAGES
-# =========================
 @app.get("/projects", response_class=HTMLResponse)
 async def projects(request: Request):
     ctx = _base_context(request, "Projects")
@@ -915,8 +857,8 @@ async def projects(request: Request):
 
 @app.get("/projects/{slug}", response_class=HTMLResponse)
 async def project_detail(request: Request, slug: str):
-    projects = PROJECTS if isinstance(PROJECTS, list) else []
-    project = next((p for p in projects if p.get("slug") == slug), None)
+    projects_list = PROJECTS if isinstance(PROJECTS, list) else []
+    project = next((p for p in projects_list if p.get("slug") == slug), None)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -947,12 +889,6 @@ async def contact(request: Request):
     return templates.TemplateResponse("contact.html", ctx)
 
 
-# =========================
-# HEALTH
-# =========================
 @app.get("/health", response_class=HTMLResponse)
 async def health():
     return "OK"
-
-
-
