@@ -738,6 +738,60 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 from projects_data import PROJECTS
 from blog_posts import POSTS
+EMAIL_ADDRESS = "abhutada1@babson.edu"
+LINKEDIN_URL = "https://linkedin.com/in/atharva-bhutada"
+SUBSTACK_URL = "https://atharvabhutada1.substack.com/"
+STREAMLIT_URL = "https://my-portfolio-atharva-bhutada.streamlit.app/"
+
+ABOUT_TEXT = (
+    "Hey, I am Atharva Bhutada, a finance professional with a Master’s in Finance from Babson College "
+    "and around three years of experience as an equity research analyst. I got into finance at 14 after "
+    "reading Rich Dad Poor Dad, which changed how I thought about money, shifting my focus from looking rich "
+    "to building wealth that compounds over time. This led me to pursue finance as my domain, with the goal of "
+    "understanding markets better and helping others achieve financial independence.\n"
+    "Since then, I have focused on fundamental equity research, combining deep business analysis, valuation modeling DCF & COMPS, "
+    "and on ground research to uncover undervalued opportunities. I have worked across metals, industrials, energy, "
+    "and consumer sectors as a sector agnostic analyst, translating market dynamics into high conviction investment ideas.\n"
+    "My approach is guided by Warren Buffett’s principle: “The big money is not in buying or selling, but in the waiting.”"
+)
+
+HIGHLIGHTS = [
+    {"title": "Equity research", "text": "Fundamental modeling, valuation, and thesis-driven research across sectors."},
+    {"title": "Data-driven work", "text": "Clean data pipelines, dashboards, and repeatable frameworks."},
+    {"title": "On-the-ground checks", "text": "Fieldwork and channel checks to validate assumptions."},
+    {"title": "Portfolio discipline", "text": "Risk, sizing, and consistency over short-term noise."},
+    {"title": "Global context", "text": "Macro, FX, and industry structure built into the view."},
+    {"title": "Clear writing", "text": "Research that reads clean and communicates what matters."},
+]
+
+
+def _base_context(request: Request, title: str) -> Dict[str, Any]:
+    ga_id = os.environ.get("GA_MEASUREMENT_ID", "").strip() or None
+
+    web3_key = os.environ.get("WEB3FORMS_ACCESS_KEY", "").strip()
+    formspree_id = os.environ.get("FORMSPREE_FORM_ID", "").strip()
+
+    form_provider = "none"
+    form_action_url = ""
+    if web3_key:
+        form_provider = "web3forms"
+        form_action_url = "https://api.web3forms.com/submit"
+    elif formspree_id:
+        form_provider = "formspree"
+        form_action_url = f"https://formspree.io/f/{formspree_id}"
+
+    return {
+        "request": request,
+        "title": title,
+        "ga_measurement_id": ga_id,
+        "email_address": EMAIL_ADDRESS,
+        "linkedin_url": LINKEDIN_URL,
+        "substack_url": SUBSTACK_URL,
+        "streamlit_url": STREAMLIT_URL,
+        "form_provider": form_provider,
+        "form_action_url": form_action_url,
+        "web3forms_access_key": web3_key or None,
+    }
 
 
 # Explicit static file route handler for Vercel serverless compatibility
