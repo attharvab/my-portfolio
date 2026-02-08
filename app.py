@@ -852,7 +852,107 @@ async def home(request: Request):
     return templates.TemplateResponse("home.html", ctx)
 
 
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    ctx = _base_context(request, "Atharva Bhutada")
+
+    posts = POSTS[:30] if isinstance(POSTS, list) else []
+    latest_posts = posts[:6]
+
+    projects = PROJECTS if isinstance(PROJECTS, list) else []
+    featured_projects = projects[:6]
+
+    ctx.update(
+        {
+            "about_text": ABOUT_TEXT,
+            "highlights": HIGHLIGHTS,
+            "latest_posts": latest_posts,
+            "featured_projects": featured_projects,
+        }
+    )
+
+    return templates.TemplateResponse("home.html", ctx)
+
+
+# =========================
+# PORTFOLIO DASHBOARD
+# =========================
+@app.get("/portfolio", response_class=HTMLResponse)
+async def portfolio(request: Request):
+    try:
+        snapshot = compute_portfolio_snapshot()
+    except Exception as e:
+        snapshot = {
+            "now_utc": datetime.now(timezone.utc),
+            "status_text": "Error loading data",
+            "status_type": "error",
+            "error": str(e),
+            "picks": [],
+            "calendar": None,
+            "india_summary": {"count": 0, "weight_pct": "0.00%"},
+            "us_summary": {"count": 0, "weight_pct": "0.00%"},
+            "country_alloc": [],
+            "failures": [],
+            "port_total_pct": "-",
+            "port_day_pct": "-",
+            "daily_alpha_vs_spx_pct": "-",
+        }
+
+    ctx = _base_context(request, APP_TITLE)
+    ctx.update({"snapshot": snapshot})
+    return templates.TemplateResponse("index.html", ctx)
+
+
+# =========================
+# SITE PAGES
+# =========================
+@app.get("/projects", response_class=HTMLResponse)
+async def projects(request: Request):
+    ctx = _base_context(request, "Projects")
+    ctx.update({"projects": PROJECTS if isinstance(PROJECTS, list) else []})
+    return templates.TemplateResponse("projects.html", ctx)
+
+
+@app.get("/projects/{slug}", response_class=HTMLResponse)
+async def project_detail(request: Request, slug: str):
+    projects = PROJECTS if isinstance(PROJECTS, list) else []
+    project = next((p for p in projects if p.get("slug") == slug), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ctx = _base_context(request, project.get("title", "Project"))
+    ctx.update({"project": project})
+    return templates.TemplateResponse("project_detail.html", ctx)
+
+
+@app.get("/blog", response_class=HTMLResponse)
+async def blog(request: Request):
+    ctx = _base_context(request, "Blog")
+    posts = POSTS[:30] if isinstance(POSTS, list) else []
+    ctx.update({"posts": posts})
+    return templates.TemplateResponse("blog.html", ctx)
+
+
+@app.get("/resume", response_class=HTMLResponse)
+async def resume(request: Request):
+    ctx = _base_context(request, "Resume")
+    resume_path = STATIC_DIR / "resume.pdf"
+    ctx.update({"resume_exists": resume_path.exists() and resume_path.is_file()})
+    return templates.TemplateResponse("resume.html", ctx)
+
+
+@app.get("/contact", response_class=HTMLResponse)
+async def contact(request: Request):
+    ctx = _base_context(request, "Contact")
+    return templates.TemplateResponse("contact.html", ctx)
+
+
+# =========================
+# HEALTH
+# =========================
 @app.get("/health", response_class=HTMLResponse)
 async def health():
     return "OK"
+
+
 
