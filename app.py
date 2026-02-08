@@ -741,7 +741,6 @@ from blog_posts import POSTS
 EMAIL_ADDRESS = "abhutada1@babson.edu"
 LINKEDIN_URL = "https://linkedin.com/in/atharva-bhutada"
 SUBSTACK_URL = "https://atharvabhutada1.substack.com/"
-STREAMLIT_URL = "https://my-portfolio-atharva-bhutada.streamlit.app/"
 
 ABOUT_TEXT = (
     "Hey, I am Atharva Bhutada, a finance professional with a Master’s in Finance from Babson College "
@@ -832,36 +831,26 @@ async def serve_static(file_path: str):
     else:
         raise HTTPException(status_code=404, detail="File not found")
 
-
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    try:
-        snapshot = compute_portfolio_snapshot()
-    except Exception as e:
-        snapshot = {
-            "now_utc": datetime.now(timezone.utc),
-            "status_text": "Error loading data",
-            "status_type": "error",
-            "error": str(e),
-            "picks": [],
-            "calendar": None,
-            "india_summary": {"count": 0, "weight_pct": "0.00%"},
-            "us_summary": {"count": 0, "weight_pct": "0.00%"},
-            "country_alloc": [],
-            "failures": [],
-            "port_total_pct": "—",
-            "port_day_pct": "—",
-            "daily_alpha_vs_spx_pct": "—",
-        }
+async def home(request: Request):
+    ctx = _base_context(request, "Atharva Bhutada")
 
-    return templates.TemplateResponse(
-        "index.html",
+    posts = POSTS[:30] if isinstance(POSTS, list) else []
+    latest_posts = posts[:6]
+
+    projects = PROJECTS if isinstance(PROJECTS, list) else []
+    featured_projects = projects[:6]
+
+    ctx.update(
         {
-            "request": request,
-            "title": APP_TITLE,
-            "snapshot": snapshot,
-        },
+            "about_text": ABOUT_TEXT,
+            "highlights": HIGHLIGHTS,
+            "latest_posts": latest_posts,
+            "featured_projects": featured_projects,
+        }
     )
+
+    return templates.TemplateResponse("home.html", ctx)
 
 
 @app.get("/health", response_class=HTMLResponse)
