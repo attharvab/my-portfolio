@@ -6,7 +6,8 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from fastapi import FastAPI, Request
+import os
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
