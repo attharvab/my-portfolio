@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="hero" id="about">
+  <div class="hero-inner">
+    <h1 class="hero-title">Finance. Research. Compounding.</h1>
+    <p class="hero-subtitle">{{ about_text }}</p>
+
+    <div class="hero-cta">
+      <a class="btn" href="/projects">View projects</a>
+      <a class="btn btn-ghost" href="/contact">Contact</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="highlights">
+  <div class="section-inner">
+    <h2>Highlights</h2>
+    <div class="card-grid">
+      {% for item in highlights %}
+      <div class="card">
+        <h3>{{ item.title }}</h3>
+        <p>{{ item.text }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="section" id="portfolio">
+  <div class="section-inner">
+    <div class="section-head">
+      <h2>Portfolio</h2>
+      <a class="text-link" href="{{ streamlit_url }}" target="_blank" rel="noreferrer">Open dashboard</a>
+    </div>
+    <div class="iframe-wrap">
+      <iframe
+        src="{{ streamlit_url }}"
+        title="Atharva Portfolio Dashboard"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+      ></iframe>
+    </div>
+    <p class="muted">This embed loads my live Streamlit dashboard. If it does not load, open it in a new tab.</p>
+  </div>
+</section>
+
+<section class="section" id="blog">
+  <div class="section-inner">
+    <div class="section-head">
+      <h2>Blog</h2>
+      <a class="text-link" href="/blog">All posts</a>
+    </div>
+
+    {% if latest_posts and latest_posts|length > 0 %}
+    <div class="list-grid">
+      {% for post in latest_posts %}
+      <div class="list-item">
+        <div class="list-meta">{{ post.date }}</div>
+        <h3 class="list-title">{{ post.title }}</h3>
+        <p class="list-summary">{{ post.summary }}</p>
+        <a class="text-link" href="{{ post.url }}" target="_blank" rel="noreferrer">Read</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h3>Blog posts coming soon</h3>
+      <p class="muted">I will add posts here manually. Until then, you can read on Substack.</p>
+      <a class="btn btn-ghost" href="{{ substack_url }}" target="_blank" rel="noreferrer">Open Substack</a>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="section" id="projects">
+  <div class="section-inner">
+    <div class="section-head">
+      <h2>Projects</h2>
+      <a class="text-link" href="/projects">All projects</a>
+    </div>
+
+    {% if featured_projects and featured_projects|length > 0 %}
+    <div class="card-grid">
+      {% for p in featured_projects %}
+      <div class="card">
+        <h3>{{ p.title }}</h3>
+        <p class="muted">{{ p.one_liner }}</p>
+        <p>{{ p.overview_short }}</p>
+        <a class="text-link" href="/projects/{{ p.slug }}">Read more</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h3>Projects loading soon</h3>
+      <p class="muted">Add projects in projects_data.py and they will appear here automatically.</p>
+      <a class="btn btn-ghost" href="/projects">Go to projects</a>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+{% endblock %}
