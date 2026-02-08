@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="section-inner">
+    <h1 class="page-title">Resume</h1>
+
+    {% if resume_exists %}
+      <p class="muted">Download a PDF copy of my resume.</p>
+      <a class="btn" href="/static/resume.pdf" download>Download resume</a>
+    {% else %}
+      <div class="empty-state">
+        <h3>Resume file not uploaded yet</h3>
+        <p class="muted">Place your resume at static/resume.pdf and this button will work automatically.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
