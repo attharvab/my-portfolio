@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="section-inner">
+    <a class="text-link" href="/projects">Back to Projects</a>
+
+    <h1 class="page-title">{{ project.title }}</h1>
+    <p class="muted">{{ project.one_liner }}</p>
+    <p>{{ project.overview_short }}</p>
+
+    {% if project.blocks %}
+      {% for b in project.blocks %}
+      <div class="content-block">
+        <h2>{{ b.heading }}</h2>
+        {% for para in b.paragraphs %}
+        <p>{{ para }}</p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
