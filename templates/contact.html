@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="section-inner">
+    <h1 class="page-title">Contact</h1>
+
+    <div class="contact-grid">
+      <div class="panel-lite">
+        <h2>Links</h2>
+        <ul class="link-list">
+          <li><a href="mailto:{{ email_address }}">{{ email_address }}</a></li>
+          <li><a href="{{ linkedin_url }}" target="_blank" rel="noreferrer">LinkedIn</a></li>
+          <li><a href="{{ substack_url }}" target="_blank" rel="noreferrer">Substack</a></li>
+        </ul>
+      </div>
+
+      <div class="panel-lite">
+        <h2>Message me</h2>
+
+        {% if form_provider == "none" %}
+          <p class="muted">The contact form is not configured yet. Add WEB3FORMS_ACCESS_KEY or FORMSPREE_FORM_ID in Vercel env vars.</p>
+          <p class="muted">For now, email me directly at <a href="mailto:{{ email_address }}">{{ email_address }}</a>.</p>
+        {% else %}
+          <form id="contactForm" action="{{ form_action_url }}" method="POST">
+            {% if form_provider == "web3forms" %}
+              <input type="hidden" name="access_key" value="{{ web3forms_access_key }}" />
+              <input type="hidden" name="subject" value="New message from atharvabhutada.com" />
+            {% endif %}
+
+            <label class="form-label">
+              Name
+              <input class="form-input" type="text" name="name" required />
+            </label>
+
+            <label class="form-label">
+              Email
+              <input class="form-input" type="email" name="email" required />
+            </label>
+
+            <label class="form-label">
+              Message
+              <textarea class="form-input" name="message" rows="6" required></textarea>
+            </label>
+
+            <button class="btn" type="submit">Send</button>
+            <p id="formStatus" class="muted" style="margin-top: 0.75rem;"></p>
+          </form>
+
+          <script>
+            (function () {
+              var form = document.getElementById("contactForm");
+              var statusEl = document.getElementById("formStatus");
+              if (!form || !statusEl) return;
+
+              form.addEventListener("submit", async function (e) {
+                e.preventDefault();
+                statusEl.textContent = "Sending...";
+
+                try {
+                  var formData = new FormData(form);
+                  var res = await fetch(form.action, {
+                    method: "POST",
+                    body: formData,
+                    headers: { "Accept": "application/json" }
+                  });
+
+                  if (res.ok) {
+                    form.reset();
+                    statusEl.textContent = "Message sent. Thank you.";
+                  } else {
+                    statusEl.textContent = "Something went wrong. Please email me directly.";
+                  }
+                } catch (err) {
+                  statusEl.textContent = "Something went wrong. Please email me directly.";
+                }
+              });
+            })();
+          </script>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
