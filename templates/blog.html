@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section">
+  <div class="section-inner">
+    <h1 class="page-title">Blog</h1>
+
+    {% if posts and posts|length > 0 %}
+    <div class="list-grid">
+      {% for post in posts %}
+      <div class="list-item">
+        <div class="list-meta">{{ post.date }}</div>
+        <h3 class="list-title">{{ post.title }}</h3>
+        <p class="list-summary">{{ post.summary }}</p>
+        <a class="text-link" href="{{ post.url }}" target="_blank" rel="noreferrer">Read</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h3>Blog posts coming soon</h3>
+      <p class="muted">I will add posts here manually. Until then, you can read on Substack.</p>
+      <a class="btn btn-ghost" href="{{ substack_url }}" target="_blank" rel="noreferrer">Open Substack</a>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
