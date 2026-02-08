@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{{ title }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/styles.css" />
+
+    {% if ga_measurement_id %}
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag("js", new Date());
+      gtag("config", "{{ ga_measurement_id }}");
+    </script>
+    {% endif %}
+  </head>
+  <body>
+    <header class="site-nav">
+      <div class="site-nav-inner">
+        <a class="brand" href="/">Atharva Bhutada</a>
+        <nav class="nav-links">
+          <a href="/#about">About</a>
+          <a href="/#highlights">Highlights</a>
+          <a href="/#portfolio">Portfolio</a>
+          <a href="/#blog">Blog</a>
+          <a href="/#projects">Projects</a>
+          <span class="nav-sep"></span>
+          <a href="/projects">All Projects</a>
+          <a href="/blog">All Posts</a>
+          <a href="/resume">Resume</a>
+          <a href="/contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="site-main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <div class="footer-left">
+          <a href="/contact">Contact</a>
+          <a href="/portfolio">Portfolio snapshot</a>
+        </div>
+        <div class="footer-right">
+          <a href="mailto:{{ email_address }}">{{ email_address }}</a>
+          <a href="{{ linkedin_url }}" target="_blank" rel="noreferrer">LinkedIn</a>
+          <a href="{{ substack_url }}" target="_blank" rel="noreferrer">Substack</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
